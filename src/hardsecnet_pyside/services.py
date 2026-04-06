@@ -1,0 +1,1009 @@
+from __future__ import annotations
+
+import json
+import platform
+import uuid
+from dataclasses import asdict, dataclass
+from importlib import resources
+from pathlib import Path
+from typing import Any
+
+from hardsecnet_pyside.agents import AgentEngine
+from hardsecnet_pyside.benchmark import BenchmarkImporter
+from hardsecnet_pyside.config import AISettings, AppPaths
+from hardsecnet_pyside.models import (
+    AgentRecommendation,
+    AgentHeartbeat,
+    AgentManifest,
+    ApprovalRecord,
+    BenchmarkDocument,
+    BenchmarkItem,
+    ComparisonDelta,
+    ComparisonCampaign,
+    ComplianceFinding,
+    DeviceRecord,
+    FleetSnapshot,
+    ModuleDefinition,
+    JobRequest,
+    JobResultEnvelope,
+    NetworkCheck,
+    ProfileTemplate,
+    ReportBundle,
+    RunRecord,
+    RunSyncEnvelope,
+    StepResult,
+    ModuleResult,
+    utc_now,
+    to_json,
+)
+from hardsecnet_pyside.persistence import HardSecNetRepository
+
+
+@dataclass(slots=True)
+class ImportedBenchmarkResult:
+    document: BenchmarkDocument
+    items: list[BenchmarkItem]
+    candidate_profiles: list[ProfileTemplate]
+    ai_recommendations: list[AgentRecommendation]
+
+
+@dataclass(slots=True)
+class RunExecutionResult:
+    run: RunRecord
+    findings: list[ComplianceFinding]
+    comparisons: list[ComparisonDelta]
+    report: ReportBundle
+    reasoning: list[AgentRecommendation]
+    remediation_plan: list[AgentRecommendation]
+    approval_review: list[AgentRecommendation]
+    network_checks: list[NetworkCheck]
+
+
+@dataclass(slots=True)
+class DashboardSnapshot:
+    device: DeviceRecord
+    profiles: list[ProfileTemplate]
+    benchmark_documents: list[BenchmarkDocument]
+    runs: list[RunRecord]
+    reports: list[ReportBundle]
+    pending_approvals: list[ApprovalRecord]
+    ai_tasks_count: int
+    module_catalog: list[ModuleDefinition]
+
+
+@dataclass(slots=True)
+class FleetSummary:
+    snapshot: FleetSnapshot
+    latest_heartbeat_by_device: dict[str, AgentHeartbeat]
+    pending_jobs: list[JobRequest]
+    active_jobs: list[JobRequest]
+    completed_jobs: list[JobRequest]
+
+
+class HardSecNetService:
+    def __init__(
+        self,
+        *,
+        paths: AppPaths,
+        repository: HardSecNetRepository,
+        importer: BenchmarkImporter,
+        agents: AgentEngine,
+        ai_settings: AISettings,
+    ) -> None:
+        self.paths = paths
+        self.repository = repository
+        self.importer = importer
+        self.agents = agents
+        self.ai_settings = ai_settings
+        self._module_catalog = self._load_module_catalog()
+
+    @classmethod
+    def bootstrap(cls, project_root: Path | None = None) -> "HardSecNetService":
+        if project_root is None:
+            project_root = Path(__file__).resolve().parents[2]
+        paths = AppPaths.discover(project_root)
+        paths.ensure()
+        repository = HardSecNetRepository(paths.database_path)
+        repository.initialize()
+        repository.bootstrap(paths)
+        service = cls(
+            paths=paths,
+            repository=repository,
+            importer=BenchmarkImporter(),
+            agents=AgentEngine(AISettings.from_env()),
+            ai_settings=AISettings.from_env(),
+        )
+        service._ensure_default_settings()
+        return service
+
+    def _ensure_default_settings(self) -> None:
+        defaults = {
+            "report_format": "html,pdf,json",
+            "operator_name": platform.node() or "operator",
+            "bmadv6.enabledModules": "core,bmm,bmb,cis",
+            "bmadv6.projectMode": "upstream-bmad-v6",
+            "bmadv6.migrationStatus": "preflight-required",
+        }
+        for key, value in defaults.items():
+            if not self.repository.get_setting(key):
+                self.repository.set_setting(key, value)
+
+    def _load_module_catalog(self) -> list[ModuleDefinition]:
+        payload = json.loads(
+            resources.files("hardsecnet_pyside.resources")
+            .joinpath("module_catalog.json")
+            .read_text(encoding="utf-8")
+        )
+        return [ModuleDefinition(**entry) for entry in payload.get("modules", [])]
+
+    def get_current_device(self) -> DeviceRecord:
+        device_id = self.repository.get_setting("current_device_id")
+        device = self.repository.get_device(device_id)
+        if device is None:
+            raise RuntimeError("Current device is not bootstrapped.")
+        return device
+
+    def current_device(self) -> DeviceRecord:
+        return self.get_current_device()
+
+    def list_modules(self, os_family: str | None = None) -> list[ModuleDefinition]:
+        if not os_family:
+            return list(self._module_catalog)
+        lowered = os_family.lower()
+        return [module for module in self._module_catalog if lowered in {family.lower() for family in module.os_families}]
+
+    def load_modules(self, os_family: str | None = None) -> list[ModuleDefinition]:
+        return self.list_modules(os_family)
+
+    def list_profiles(self, os_family: str | None = None) -> list[ProfileTemplate]:
+        profiles = self.repository.list_profiles(os_family=os_family)
+        return sorted(profiles, key=lambda item: (item.os_family, item.name))
+
+    def load_profiles(self, os_family: str | None = None) -> list[ProfileTemplate]:
+        return self.list_profiles(os_family)
+
+    def list_benchmark_documents(self, os_family: str | None = None) -> list[BenchmarkDocument]:
+        documents = self.repository.list_benchmark_documents()
+        if os_family:
+            documents = [document for document in documents if document.os_family == os_family]
+        return sorted(documents, key=lambda item: (item.os_family, item.name))
+
+    def load_benchmark_documents(self, os_family: str | None = None) -> list[BenchmarkDocument]:
+        return self.list_benchmark_documents(os_family)
+
+    def list_benchmark_items(
+        self, document_id: str | None = None, os_family: str | None = None
+    ) -> list[BenchmarkItem]:
+        items = self.repository.list_benchmark_items(document_id=document_id, os_family=os_family)
+        return sorted(items, key=lambda item: item.benchmark_id)
+
+    def load_benchmark_items(
+        self, document_id: str | None = None, os_family: str | None = None
+    ) -> list[BenchmarkItem]:
+        return self.list_benchmark_items(document_id=document_id, os_family=os_family)
+
+    def list_runs(self, device_id: str | None = None) -> list[RunRecord]:
+        runs = self.repository.list_runs(device_id=device_id)
+        return sorted(runs, key=lambda item: (item.started_at, item.id), reverse=True)
+
+    def list_reports(self) -> list[ReportBundle]:
+        reports = self.repository.list_reports()
+        return sorted(reports, key=lambda item: (item.generated_at, item.id), reverse=True)
+
+    def list_comparisons(
+        self, after_run_id: str | None = None, device_id: str | None = None
+    ) -> list[ComparisonDelta]:
+        comparisons = self.repository.list_comparisons(
+            after_run_id=after_run_id, device_id=device_id
+        )
+        return sorted(comparisons, key=lambda item: (item.after_run_id, item.id), reverse=True)
+
+    def list_approvals(self) -> list[ApprovalRecord]:
+        approvals = self.repository.list_approvals()
+        return sorted(approvals, key=lambda item: (item.decided_at, item.id), reverse=True)
+
+    def list_ai_tasks(self, subject_id: str | None = None) -> list[Any]:
+        tasks = self.repository.list_ai_tasks(subject_id=subject_id)
+        return sorted(tasks, key=lambda item: (item.created_at, item.id), reverse=True)
+
+    def get_dashboard_snapshot(self) -> DashboardSnapshot:
+        device = self.get_current_device()
+        return DashboardSnapshot(
+            device=device,
+            profiles=self.list_profiles(device.os_family),
+            benchmark_documents=self.list_benchmark_documents(device.os_family),
+            runs=self.list_runs(device.id),
+            reports=self.list_reports(),
+            pending_approvals=[
+                approval for approval in self.list_approvals() if approval.decision in {"pending", "review"}
+            ],
+            ai_tasks_count=len(self.list_ai_tasks()),
+            module_catalog=self.list_modules(device.os_family),
+        )
+
+    def enroll_device(
+        self,
+        *,
+        device_id: str,
+        name: str,
+        os_family: str,
+        hostname: str,
+        agent_version: str = "0.1.0",
+        agent_mode: str = "fleet",
+        capabilities: list[str] | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> DeviceRecord:
+        normalized_os = os_family.lower().strip()
+        if not device_id:
+            raise ValueError("device_id is required")
+        if normalized_os not in {"windows", "linux"}:
+            raise ValueError(f"Unsupported os_family: {os_family}")
+        device = DeviceRecord(
+            id=device_id,
+            name=name,
+            os_family=normalized_os,
+            hostname=hostname,
+            agent_mode=agent_mode,
+            tags=tags or [],
+            metadata=metadata or {},
+        )
+        self.repository.save_device(device)
+        self.repository.save_agent_manifest(
+            AgentManifest(
+                device_id=device.id,
+                agent_version=agent_version,
+                capabilities=capabilities or ["audit", "heartbeat", "job-execution"],
+            )
+        )
+        return device
+
+    def list_agent_manifests(self) -> list[AgentManifest]:
+        return sorted(self.repository.list_agent_manifests(), key=lambda item: item.device_id)
+
+    def get_agent_manifest(self, device_id: str) -> AgentManifest | None:
+        return self.repository.get_agent_manifest(device_id)
+
+    def record_heartbeat(
+        self,
+        *,
+        device_id: str,
+        status: str,
+        queued_jobs: int,
+        details: dict[str, Any] | None = None,
+    ) -> AgentHeartbeat:
+        device = self.repository.get_device(device_id)
+        if device is None:
+            raise ValueError(f"Unknown device: {device_id}")
+        heartbeat = AgentHeartbeat(
+            id=f"heartbeat-{uuid.uuid4().hex[:12]}",
+            device_id=device_id,
+            status=status,
+            queued_jobs=queued_jobs,
+            details=details or {},
+        )
+        self.repository.save_agent_heartbeat(heartbeat)
+        device.last_seen = heartbeat.observed_at
+        self.repository.save_device(device)
+        return heartbeat
+
+    def list_heartbeats(self, device_id: str | None = None) -> list[AgentHeartbeat]:
+        heartbeats = self.repository.list_agent_heartbeats(device_id=device_id)
+        return sorted(heartbeats, key=lambda item: (item.observed_at, item.id), reverse=True)
+
+    def queue_job(
+        self,
+        *,
+        device_id: str,
+        action: str,
+        payload: dict[str, Any],
+        approval_required: bool = True,
+        approval_state: str = "approved",
+    ) -> JobRequest:
+        if self.repository.get_device(device_id) is None:
+            raise ValueError(f"Unknown device: {device_id}")
+        job = JobRequest(
+            id=f"job-{uuid.uuid4().hex[:12]}",
+            device_id=device_id,
+            action=action,
+            payload=payload,
+            approval_required=approval_required,
+            approval_state=approval_state,
+            status="queued",
+        )
+        self.repository.save_job(job)
+        return job
+
+    def list_jobs(self, device_id: str | None = None, status: str | None = None) -> list[JobRequest]:
+        jobs = self.repository.list_jobs(device_id=device_id, status=status)
+        return sorted(jobs, key=lambda item: (item.created_at, item.id), reverse=True)
+
+    def claim_job(
+        self,
+        job_id: str,
+        *,
+        device_id: str,
+        claimed_by: str = "",
+    ) -> JobRequest | None:
+        job = self.repository.get_job(job_id)
+        if job is None:
+            raise ValueError(f"Unknown job: {job_id}")
+        if job.device_id != device_id:
+            return None
+        if job.status not in {"queued", "pending"}:
+            return None
+        if job.approval_required and job.approval_state != "approved":
+            return None
+        job.status = "in_progress"
+        job.claimed_at = utc_now()
+        job.assigned_to = claimed_by or device_id
+        job.updated_at = utc_now()
+        self.repository.save_job(job)
+        return job
+
+    def complete_job(
+        self,
+        job_id: str,
+        *,
+        device_id: str,
+        status: str = "completed",
+        summary: str = "",
+        artifacts: list[str] | None = None,
+        details: dict[str, Any] | None = None,
+        run_id: str = "",
+    ) -> JobResultEnvelope:
+        job = self.repository.get_job(job_id)
+        if job is None:
+            raise ValueError(f"Unknown job: {job_id}")
+        if job.device_id != device_id:
+            raise ValueError(f"Job {job_id} does not belong to device {device_id}")
+        job.status = status
+        job.completed_at = utc_now()
+        job.updated_at = job.completed_at
+        job.result_summary = summary
+        job.artifact_paths = list(artifacts or [])
+        job.error = "" if status == "completed" else (details or {}).get("error", "")
+        self.repository.save_job(job)
+        result = JobResultEnvelope(
+            id=f"jobresult-{uuid.uuid4().hex[:12]}",
+            job_id=job.id,
+            device_id=device_id,
+            status=status,
+            summary=summary,
+            artifacts=list(artifacts or []),
+            run_id=run_id,
+            details=details or {},
+        )
+        self.repository.save_job_result(result)
+        return result
+
+    def list_job_results(
+        self, device_id: str | None = None, job_id: str | None = None
+    ) -> list[JobResultEnvelope]:
+        results = self.repository.list_job_results(device_id=device_id, job_id=job_id)
+        return sorted(results, key=lambda item: (item.reported_at, item.id), reverse=True)
+
+    def list_campaigns(self) -> list[ComparisonCampaign]:
+        return sorted(self.repository.list_campaigns(), key=lambda item: (item.created_at, item.id), reverse=True)
+
+    def create_campaign(
+        self, name: str, device_ids: list[str], benchmark_scope: list[str]
+    ) -> ComparisonCampaign:
+        campaign = ComparisonCampaign(
+            id=f"campaign-{uuid.uuid4().hex[:12]}",
+            name=name,
+            device_ids=device_ids,
+            benchmark_scope=benchmark_scope,
+        )
+        self.repository.save_campaign(campaign)
+        return campaign
+
+    def get_fleet_snapshot(self) -> FleetSnapshot:
+        devices = sorted(self.repository.list_devices(), key=lambda item: (item.hostname, item.id))
+        manifests = self.list_agent_manifests()
+        heartbeats = self.list_heartbeats()
+        jobs = self.list_jobs()
+        results = self.list_job_results()
+        campaigns = self.list_campaigns()
+        return FleetSnapshot(
+            devices=devices,
+            manifests=manifests,
+            heartbeats=heartbeats,
+            jobs=jobs,
+            job_results=results,
+            campaigns=campaigns,
+            device_count=len(devices),
+            online_device_count=sum(
+                1 for heartbeat in heartbeats if heartbeat.status.lower() in {"online", "healthy", "ready"}
+            ),
+            queued_job_count=sum(1 for job in jobs if job.status == "queued"),
+            in_progress_job_count=sum(1 for job in jobs if job.status == "in_progress"),
+            completed_job_count=sum(1 for job in jobs if job.status == "completed"),
+        )
+
+    def get_fleet_summary(self) -> FleetSummary:
+        snapshot = self.get_fleet_snapshot()
+        latest_heartbeat_by_device: dict[str, AgentHeartbeat] = {}
+        for heartbeat in snapshot.heartbeats:
+            current = latest_heartbeat_by_device.get(heartbeat.device_id)
+            if current is None or (heartbeat.observed_at, heartbeat.id) > (current.observed_at, current.id):
+                latest_heartbeat_by_device[heartbeat.device_id] = heartbeat
+        pending_jobs = [job for job in snapshot.jobs if job.status == "queued"]
+        active_jobs = [job for job in snapshot.jobs if job.status == "in_progress"]
+        completed_jobs = [job for job in snapshot.jobs if job.status == "completed"]
+        return FleetSummary(
+            snapshot=snapshot,
+            latest_heartbeat_by_device=latest_heartbeat_by_device,
+            pending_jobs=pending_jobs,
+            active_jobs=active_jobs,
+            completed_jobs=completed_jobs,
+        )
+
+    def import_benchmark(self, import_path: str | Path) -> ImportedBenchmarkResult:
+        path = Path(import_path)
+        document, items = self.importer.import_path(path)
+        imported_target = self.paths.imports_dir / path.name
+        imported_target.write_bytes(path.read_bytes())
+        document.source_path = str(imported_target)
+        self.repository.save_benchmark_document(document)
+        self.repository.save_benchmark_items(items)
+
+        ingestion_task, recommendations = self.agents.benchmark_ingestion_agent(document, items)
+        self.repository.save_ai_task(ingestion_task)
+
+        profile_task, profiles = self.agents.profile_builder_agent(document, items)
+        self.repository.save_ai_task(profile_task)
+        for profile in profiles:
+            self.repository.save_profile(profile)
+
+        return ImportedBenchmarkResult(
+            document=document,
+            items=items,
+            candidate_profiles=profiles,
+            ai_recommendations=recommendations,
+        )
+
+    def run_profile(
+        self,
+        profile_id: str,
+        selected_modules: list[str] | None = None,
+        operator: str | None = None,
+    ) -> RunExecutionResult:
+        device = self.get_current_device()
+        profile = self.repository.get_profile(profile_id)
+        if profile is None:
+            raise ValueError(f"Unknown profile: {profile_id}")
+
+        modules = selected_modules or profile.module_ids
+        benchmark_items = [
+            item
+            for item in self.repository.list_benchmark_items(os_family=device.os_family)
+            if item.benchmark_id in profile.benchmark_ids
+        ]
+        if not benchmark_items:
+            benchmark_items = self.repository.list_benchmark_items(os_family=device.os_family)
+
+        run_id = f"run-{uuid.uuid4().hex[:12]}"
+        run = RunRecord(
+            id=run_id,
+            device_id=device.id,
+            profile_id=profile.id,
+            os_family=device.os_family,
+            status="completed",
+            modules=modules,
+        )
+
+        run.module_results = self._build_module_results(run, benchmark_items, modules)
+        findings = self._build_findings(run, benchmark_items, profile)
+        run.summary = self._summarize_findings(findings)
+        run.ended_at = utc_now()
+
+        self.repository.save_run(run)
+        self.repository.save_findings(findings)
+
+        previous_runs = [item for item in self.list_runs(device.id) if item.id != run.id]
+        comparisons = self._build_comparisons(run, findings, previous_runs[:1])
+        if comparisons:
+            self.repository.save_comparisons(comparisons)
+
+        report = self._build_and_store_report(run, findings, comparisons)
+        reasoning_task, reasoning = self.agents.audit_reasoning_agent(run, findings, comparisons)
+        remediation_task, remediation_plan = self.agents.remediation_planner_agent(run, findings)
+        approval_task, approval_review = self.agents.approval_gate_agent(findings)
+        report_task, generated_summary = self.agents.report_writer_agent(run, findings, report)
+
+        report.executive_summary = generated_summary
+        report.technical_summary = self._technical_summary(run, findings, comparisons)
+        self.repository.save_report(report)
+
+        for task in (reasoning_task, remediation_task, approval_task, report_task):
+            self.repository.save_ai_task(task)
+
+        approval_record = ApprovalRecord(
+            id=f"approval-{uuid.uuid4().hex[:12]}",
+            target_type="run",
+            target_id=run.id,
+            decision="review",
+            reviewer=operator or self.repository.get_setting("operator_name", "operator"),
+            notes="Run completed. Review remediation recommendations before hardening actions.",
+        )
+        self.repository.save_approval(approval_record)
+
+        return RunExecutionResult(
+            run=run,
+            findings=findings,
+            comparisons=comparisons,
+            report=report,
+            reasoning=reasoning,
+            remediation_plan=remediation_plan,
+            approval_review=approval_review,
+            network_checks=self.get_network_checks(run.id),
+        )
+
+    def build_sync_envelope(self, run_id: str) -> RunSyncEnvelope:
+        run = self.repository.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Unknown run: {run_id}")
+        findings = self.repository.list_findings(run_id=run.id)
+        comparisons = self.repository.list_comparisons(after_run_id=run.id)
+        reports = [report for report in self.list_reports() if report.run_id == run.id]
+        return RunSyncEnvelope(run=run, findings=findings, comparisons=comparisons, reports=reports)
+
+    def get_network_checks(self, run_id: str | None = None) -> list[NetworkCheck]:
+        findings = self.repository.list_findings(run_id=run_id) if run_id else []
+        if not findings and self.list_runs(self.get_current_device().id):
+            latest_run = self.list_runs(self.get_current_device().id)[0]
+            findings = self.repository.list_findings(run_id=latest_run.id)
+
+        checks: list[NetworkCheck] = []
+        for finding in findings:
+            if "network" in finding.title.lower() or "firewall" in finding.title.lower():
+                checks.append(
+                    NetworkCheck(
+                        id=f"net-{finding.id}",
+                        title=finding.title,
+                        status=finding.status,
+                        details=f"Expected: {finding.expected or 'benchmark-aligned posture'} | Actual: {finding.actual or 'see run evidence'}",
+                        benchmark_refs=[finding.benchmark_id],
+                    )
+                )
+        if not checks:
+            checks.append(
+                NetworkCheck(
+                    id="net-default",
+                    title="Network posture baseline",
+                    status="Review Required",
+                    details="No network-specific finding has been produced yet. Run an audit profile to populate live network posture checks.",
+                    benchmark_refs=[],
+                )
+            )
+        return checks
+
+    def get_ai_recommendations(self, run_id: str) -> dict[str, list[AgentRecommendation]]:
+        run = self.repository.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Unknown run: {run_id}")
+        findings = self.repository.list_findings(run_id=run.id)
+        comparisons = self.repository.list_comparisons(after_run_id=run.id)
+        _, reasoning = self.agents.audit_reasoning_agent(run, findings, comparisons)
+        _, remediation = self.agents.remediation_planner_agent(run, findings)
+        _, approvals = self.agents.approval_gate_agent(findings)
+        return {
+            "reasoning": reasoning,
+            "remediation": remediation,
+            "approvals": approvals,
+        }
+
+    def approve_target(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        decision: str,
+        reviewer: str,
+        notes: str = "",
+    ) -> ApprovalRecord:
+        approval = ApprovalRecord(
+            id=f"approval-{uuid.uuid4().hex[:12]}",
+            target_type=target_type,
+            target_id=target_id,
+            decision=decision,
+            reviewer=reviewer,
+            notes=notes,
+        )
+        self.repository.save_approval(approval)
+        return approval
+
+    def export_report_payload(self, report_id: str) -> dict[str, Any]:
+        report = self.repository.get_report(report_id)
+        if report is None:
+            raise ValueError(f"Unknown report: {report_id}")
+        run = self.repository.get_run(report.run_id)
+        if run is None:
+            raise ValueError(f"Unknown run linked to report: {report.run_id}")
+        payload = {
+            "report": asdict(report),
+            "run": asdict(run),
+            "findings": [asdict(item) for item in self.repository.list_findings(run_id=run.id)],
+            "comparisons": [asdict(item) for item in self.repository.list_comparisons(after_run_id=run.id)],
+            "device": asdict(self.get_current_device()),
+        }
+        return payload
+
+    def _build_module_results(
+        self,
+        run: RunRecord,
+        benchmark_items: list[BenchmarkItem],
+        selected_modules: list[str],
+    ) -> list[ModuleResult]:
+        module_index = {module.id: module for module in self._module_catalog}
+        results: list[ModuleResult] = []
+        artifact_dir = self.paths.artifacts_dir / run.id
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for module_id in selected_modules:
+            module = module_index.get(module_id)
+            if module is None:
+                continue
+            related_items = [item for item in benchmark_items if module_id in item.candidate_modules]
+            if not related_items:
+                related_items = benchmark_items[:1]
+            artifact_path = artifact_dir / f"{module.id}.json"
+            artifact_payload = {
+                "run_id": run.id,
+                "module_id": module.id,
+                "module_name": module.name,
+                "os_family": run.os_family,
+                "benchmark_refs": [item.benchmark_id for item in related_items],
+                "captured_at": utc_now(),
+            }
+            artifact_path.write_text(to_json(artifact_payload), encoding="utf-8")
+            results.append(
+                ModuleResult(
+                    module_id=module.id,
+                    title=module.name,
+                    benchmark_refs=[item.benchmark_id for item in related_items],
+                    manual=module_id == "baseline_harden",
+                    steps=[
+                        StepResult(
+                            stage="prepare",
+                            status="completed",
+                            message=f"Prepared {module.name} for {run.os_family}.",
+                            evidence=[f"legacy_repo:{self._legacy_repo_for_os(run.os_family)}"],
+                        ),
+                        StepResult(
+                            stage="execute",
+                            status="completed",
+                            message=f"Executed deterministic {module.name} scaffold flow.",
+                            evidence=[item.title for item in related_items[:3]],
+                        ),
+                        StepResult(
+                            stage="record",
+                            status="completed",
+                            message="Captured artifacts and traceability links.",
+                            artifact_paths=[str(artifact_path)],
+                        ),
+                    ],
+                )
+            )
+        return results
+
+    def _build_findings(
+        self,
+        run: RunRecord,
+        benchmark_items: list[BenchmarkItem],
+        profile: ProfileTemplate,
+    ) -> list[ComplianceFinding]:
+        findings: list[ComplianceFinding] = []
+        for index, item in enumerate(benchmark_items, start=1):
+            compliant = item.status == "approved" and index % 3 != 0
+            status = "Compliant" if compliant else "Needs Review"
+            actual = (
+                "Synthetic audit confirms expected state."
+                if compliant
+                else "Synthetic audit flagged a variance that requires operator review."
+            )
+            findings.append(
+                ComplianceFinding(
+                    id=f"finding-{uuid.uuid4().hex[:12]}",
+                    run_id=run.id,
+                    benchmark_id=item.benchmark_id,
+                    title=item.title,
+                    status=status,
+                    severity="medium" if compliant else "high",
+                    evidence=[
+                        f"profile:{profile.name}",
+                        f"module_refs:{','.join(item.candidate_modules)}",
+                        *item.citations[:2],
+                    ],
+                    expected=item.recommendation or "Approved benchmark-aligned state",
+                    actual=actual,
+                    source_page=item.source_page,
+                    module_id=item.candidate_modules[0] if item.candidate_modules else "",
+                    remediation=[step.command for step in item.remediation_steps],
+                    rollback=item.rollback_notes or [step.rollback for step in item.remediation_steps],
+                    rationale=item.rationale,
+                    citations=item.citations,
+                    confidence=item.confidence,
+                )
+            )
+        return findings
+
+    def _summarize_findings(self, findings: list[ComplianceFinding]) -> dict[str, Any]:
+        compliant = sum(1 for finding in findings if finding.status == "Compliant")
+        review = sum(1 for finding in findings if finding.status != "Compliant")
+        return {
+            "total_findings": len(findings),
+            "compliant": compliant,
+            "needs_review": review,
+            "approval_required": review > 0,
+        }
+
+    def _build_comparisons(
+        self,
+        run: RunRecord,
+        findings: list[ComplianceFinding],
+        previous_runs: list[RunRecord],
+    ) -> list[ComparisonDelta]:
+        if not previous_runs:
+            return []
+        prior_run = previous_runs[0]
+        prior_findings = {
+            finding.benchmark_id: finding for finding in self.repository.list_findings(run_id=prior_run.id)
+        }
+        comparisons: list[ComparisonDelta] = []
+        for finding in findings:
+            previous = prior_findings.get(finding.benchmark_id)
+            if previous is None or previous.status == finding.status:
+                continue
+            comparisons.append(
+                ComparisonDelta(
+                    id=f"cmp-{uuid.uuid4().hex[:12]}",
+                    device_id=run.device_id,
+                    before_run_id=prior_run.id,
+                    after_run_id=run.id,
+                    benchmark_id=finding.benchmark_id,
+                    title=finding.title,
+                    delta_type="improved" if finding.status == "Compliant" else "regressed",
+                    before_status=previous.status,
+                    after_status=finding.status,
+                    summary=f"{finding.title}: {previous.status} -> {finding.status}",
+                )
+            )
+        return comparisons
+
+    def _build_and_store_report(
+        self,
+        run: RunRecord,
+        findings: list[ComplianceFinding],
+        comparisons: list[ComparisonDelta],
+    ) -> ReportBundle:
+        report_id = f"report-{uuid.uuid4().hex[:12]}"
+        report = ReportBundle(
+            id=report_id,
+            run_id=run.id,
+            comparison_id=comparisons[0].id if comparisons else "",
+            title=f"HardSecNet Report {run.id}",
+        )
+        payload = self.exportable_report_payload(run, findings, comparisons, report)
+        json_path = self.paths.reports_dir / f"{report.id}.json"
+        html_path = self.paths.reports_dir / f"{report.id}.html"
+        pdf_path = self.paths.reports_dir / f"{report.id}.pdf"
+
+        json_path.write_text(to_json(payload), encoding="utf-8")
+        html_body = self._render_report_html(run, findings, comparisons, report)
+        html_path.write_text(html_body, encoding="utf-8")
+        self._write_pdf(pdf_path, run, findings, comparisons, report)
+
+        report.json_path = str(json_path)
+        report.html_path = str(html_path)
+        report.pdf_path = str(pdf_path)
+        report.executive_summary = self._executive_summary(run, findings)
+        report.technical_summary = self._technical_summary(run, findings, comparisons)
+        self.repository.save_report(report)
+        return report
+
+    def exportable_report_payload(
+        self,
+        run: RunRecord,
+        findings: list[ComplianceFinding],
+        comparisons: list[ComparisonDelta],
+        report: ReportBundle,
+    ) -> dict[str, Any]:
+        return {
+            "report": asdict(report),
+            "run": asdict(run),
+            "device": asdict(self.get_current_device()),
+            "findings": [asdict(item) for item in findings],
+            "comparisons": [asdict(item) for item in comparisons],
+            "network_checks": [asdict(item) for item in self.get_network_checks(run.id)],
+            "ai_mode": self.ai_settings.mode,
+            "generated_at": utc_now(),
+        }
+
+    def _render_report_html(
+        self,
+        run: RunRecord,
+        findings: list[ComplianceFinding],
+        comparisons: list[ComparisonDelta],
+        report: ReportBundle,
+    ) -> str:
+        findings_markup = "\n".join(
+            (
+                f"<tr><td>{finding.benchmark_id}</td><td>{finding.title}</td>"
+                f"<td>{finding.status}</td><td>{finding.severity}</td>"
+                f"<td>{'<br/>'.join(finding.evidence)}</td></tr>"
+            )
+            for finding in findings
+        )
+        comparisons_markup = "\n".join(
+            f"<li>{delta.summary}</li>" for delta in comparisons
+        ) or "<li>No prior baseline available for comparison.</li>"
+        return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{report.title}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --ink: #102132;
+      --accent: #0b6b82;
+      --bg: #f5f0e8;
+      --panel: #ffffff;
+      --muted: #57707d;
+      --line: #d4dce2;
+    }}
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", "Noto Sans", sans-serif;
+      background: linear-gradient(135deg, #f5f0e8 0%, #edf7f8 100%);
+      color: var(--ink);
+    }}
+    main {{
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px;
+    }}
+    section {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 14px 40px rgba(16, 33, 50, 0.08);
+    }}
+    h1, h2 {{ margin-top: 0; }}
+    h1 {{ color: var(--accent); }}
+    .meta {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }}
+    th, td {{
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }}
+    .pill {{
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #e1f0f4;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <span class="pill">Benchmark-aware hardening report</span>
+      <h1>{report.title}</h1>
+      <p>{self._executive_summary(run, findings)}</p>
+      <div class="meta">
+        <div><strong>Run ID</strong><br />{run.id}</div>
+        <div><strong>Device</strong><br />{self.get_current_device().name}</div>
+        <div><strong>Profile</strong><br />{run.profile_id}</div>
+        <div><strong>Generated</strong><br />{report.generated_at}</div>
+      </div>
+    </section>
+    <section>
+      <h2>Finding Summary</h2>
+      <table>
+        <thead>
+          <tr><th>Benchmark</th><th>Title</th><th>Status</th><th>Severity</th><th>Evidence</th></tr>
+        </thead>
+        <tbody>
+          {findings_markup}
+        </tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Comparison Deltas</h2>
+      <ul>{comparisons_markup}</ul>
+    </section>
+    <section>
+      <h2>Technical Summary</h2>
+      <p>{self._technical_summary(run, findings, comparisons)}</p>
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+    def _write_pdf(
+        self,
+        pdf_path: Path,
+        run: RunRecord,
+        findings: list[ComplianceFinding],
+        comparisons: list[ComparisonDelta],
+        report: ReportBundle,
+    ) -> None:
+        try:
+            import fitz  # type: ignore
+        except ImportError:
+            pdf_path.write_text(
+                f"{report.title}\n\n{self._executive_summary(run, findings)}\n\n"
+                f"{self._technical_summary(run, findings, comparisons)}\n",
+                encoding="utf-8",
+            )
+            return
+
+        document = fitz.open()
+        page = document.new_page()
+        content_lines = [
+            report.title,
+            "",
+            f"Run ID: {run.id}",
+            f"Profile: {run.profile_id}",
+            f"Device: {self.get_current_device().name}",
+            "",
+            "Executive Summary",
+            self._executive_summary(run, findings),
+            "",
+            "Technical Summary",
+            self._technical_summary(run, findings, comparisons),
+            "",
+            "Findings",
+        ]
+        for finding in findings:
+            content_lines.append(f"- {finding.benchmark_id} | {finding.status} | {finding.title}")
+        text = "\n".join(content_lines)
+        page.insert_textbox(fitz.Rect(48, 48, 548, 780), text, fontsize=11)
+        document.save(pdf_path)
+        document.close()
+
+    def _executive_summary(self, run: RunRecord, findings: list[ComplianceFinding]) -> str:
+        summary = self._summarize_findings(findings)
+        return (
+            f"Profile {run.profile_id} completed on {self.get_current_device().hostname} with "
+            f"{summary['compliant']} compliant findings and {summary['needs_review']} items requiring review. "
+            "All output is traceable to benchmark references, evidence, and rollback-aware remediation notes."
+        )
+
+    def _technical_summary(
+        self,
+        run: RunRecord,
+        findings: list[ComplianceFinding],
+        comparisons: list[ComparisonDelta],
+    ) -> str:
+        comparison_text = (
+            f"{len(comparisons)} before/after deltas were recorded."
+            if comparisons
+            else "No prior run was available for delta analysis."
+        )
+        return (
+            f"Run status: {run.status}. Modules executed: {', '.join(run.modules)}. "
+            f"Findings generated: {len(findings)}. {comparison_text} "
+            f"Artifacts were written to {self.paths.reports_dir} and {self.paths.artifacts_dir}."
+        )
+
+    def _legacy_repo_for_os(self, os_family: str) -> Path:
+        return self.paths.windows_repo if os_family == "windows" else self.paths.linux_repo

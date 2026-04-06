@@ -1,0 +1,206 @@
+{
+  "documents": [
+    {
+      "id": "builtin-doc-windows",
+      "name": "Built-in Windows Desktop Baseline",
+      "version": "1.0",
+      "os_family": "windows",
+      "source_type": "curated",
+      "source_path": "built-in",
+      "source_hash": "builtin-windows",
+      "status": "approved",
+      "provenance": {
+        "origin": "hardsecnet-pyside seed data"
+      }
+    },
+    {
+      "id": "builtin-doc-linux",
+      "name": "Built-in Ubuntu Desktop Baseline",
+      "version": "1.0",
+      "os_family": "linux",
+      "source_type": "curated",
+      "source_path": "built-in",
+      "source_hash": "builtin-linux",
+      "status": "approved",
+      "provenance": {
+        "origin": "hardsecnet-pyside seed data"
+      }
+    }
+  ],
+  "items": [
+    {
+      "id": "builtin-item-win-lock",
+      "document_id": "builtin-doc-windows",
+      "benchmark_id": "CIS-Windows-11-1.4.1",
+      "title": "Ensure lock screen remains enabled",
+      "os_family": "windows",
+      "profile_level": "L1",
+      "automated": true,
+      "rationale": "Keeping the lock screen enabled reduces the chance of unattended desktop access exposure.",
+      "recommendation": "Set NoLockScreen to 0 or leave it unset.",
+      "audit_logic": [
+        {
+          "kind": "json_field",
+          "target": "screen_lock",
+          "operator": "equals",
+          "expected": 0,
+          "notes": "Mapped to the Windows audit JSON output."
+        }
+      ],
+      "remediation_steps": [
+        {
+          "title": "Enable the Windows lock screen",
+          "command": "Set-ItemProperty -Path \"HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization\" -Name \"NoLockScreen\" -Value 0",
+          "expected_impact": "Restores the lock screen requirement.",
+          "rollback": "Revert the registry value if your environment explicitly requires a different lock screen policy.",
+          "approval_required": true
+        }
+      ],
+      "rollback_notes": [
+        "Review Windows personalization policy requirements before rollback."
+      ],
+      "evidence_fields": [
+        {
+          "name": "screen_lock",
+          "description": "Registry-derived screen lock state from the Windows audit JSON.",
+          "required": true
+        }
+      ],
+      "source_page": 1,
+      "citations": ["CIS-Windows-11-1.4.1"],
+      "confidence": 0.95,
+      "status": "approved",
+      "tags": ["desktop", "screen-lock"],
+      "candidate_modules": ["cis_audit", "baseline_harden", "drift_check"]
+    },
+    {
+      "id": "builtin-item-win-password-age",
+      "document_id": "builtin-doc-windows",
+      "benchmark_id": "CIS-Windows-11-1.1.2",
+      "title": "Review maximum password age baseline",
+      "os_family": "windows",
+      "profile_level": "L1",
+      "automated": false,
+      "rationale": "Password age is part of the baseline password hygiene posture.",
+      "recommendation": "Validate password age policy using imported benchmark material and Windows account policy evidence.",
+      "audit_logic": [
+        {
+          "kind": "manual_review",
+          "target": "windows-password-age",
+          "operator": "review_required",
+          "expected": "Configured per approved benchmark profile",
+          "notes": "Seeded as report-traceable but manual until deeper policy extraction is implemented."
+        }
+      ],
+      "remediation_steps": [
+        {
+          "title": "Review password age policy",
+          "command": "net accounts /maxpwage:<approved-days>",
+          "expected_impact": "Aligns local password age to the approved profile.",
+          "rollback": "Restore the previous password age after change review if needed.",
+          "approval_required": true
+        }
+      ],
+      "rollback_notes": ["Record the previous password age before modification."],
+      "evidence_fields": [
+        {
+          "name": "password_policy_review",
+          "description": "Approved evidence proving the selected maximum password age.",
+          "required": true
+        }
+      ],
+      "source_page": 1,
+      "citations": ["CIS-Windows-11-1.1.2"],
+      "confidence": 0.7,
+      "status": "review_required",
+      "tags": ["password"],
+      "candidate_modules": ["cis_audit", "baseline_harden"]
+    },
+    {
+      "id": "builtin-item-linux-gdm",
+      "document_id": "builtin-doc-linux",
+      "benchmark_id": "CIS-Ubuntu-24.04-1.7.6",
+      "title": "Ensure GDM automatic mounting of removable media is disabled",
+      "os_family": "linux",
+      "profile_level": "L1",
+      "automated": true,
+      "rationale": "Disabling automount reduces removable-media attack surface on workstation systems.",
+      "recommendation": "Disable GDM automount and keep the setting locked.",
+      "audit_logic": [
+        {
+          "kind": "linux_report_status",
+          "target": "GDM",
+          "operator": "equals",
+          "expected": "Compliant",
+          "notes": "Mapped to the Linux audit JSON systemState.status value."
+        }
+      ],
+      "remediation_steps": [
+        {
+          "title": "Disable GDM automount",
+          "command": "Review and run the appropriate GDM hardening script in the Linux toolkit.",
+          "expected_impact": "Brings removable-media handling closer to CIS guidance.",
+          "rollback": "Use the corresponding Linux unharden script if operationally required.",
+          "approval_required": true
+        }
+      ],
+      "rollback_notes": ["Use the matching Linux unharden script if approved."],
+      "evidence_fields": [
+        {
+          "name": "systemState.status",
+          "description": "Status field from the Linux GDM audit JSON.",
+          "required": true
+        }
+      ],
+      "source_page": 1,
+      "citations": ["CIS-Ubuntu-24.04-1.7.6"],
+      "confidence": 0.9,
+      "status": "approved",
+      "tags": ["gdm"],
+      "candidate_modules": ["cis_audit", "baseline_harden", "drift_check"]
+    },
+    {
+      "id": "builtin-item-linux-ufw",
+      "document_id": "builtin-doc-linux",
+      "benchmark_id": "CIS-Ubuntu-24.04-4.2.7",
+      "title": "Ensure UFW default deny firewall policy",
+      "os_family": "linux",
+      "profile_level": "L1",
+      "automated": true,
+      "rationale": "A deny-by-default firewall stance reduces unnecessary network exposure.",
+      "recommendation": "Enable UFW and set the default deny policy.",
+      "audit_logic": [
+        {
+          "kind": "linux_report_status",
+          "target": "UFW",
+          "operator": "equals",
+          "expected": "Compliant",
+          "notes": "Mapped to Linux UFW audit JSON evidence."
+        }
+      ],
+      "remediation_steps": [
+        {
+          "title": "Enable UFW deny by default",
+          "command": "Review and run the appropriate UFW hardening script in the Linux toolkit.",
+          "expected_impact": "Improves firewall posture against benchmark expectations.",
+          "rollback": "Use the Linux UFW unharden script if rollback is approved.",
+          "approval_required": true
+        }
+      ],
+      "rollback_notes": ["Record current firewall policy before rollback."],
+      "evidence_fields": [
+        {
+          "name": "ufw_status",
+          "description": "Firewall status from the Linux audit JSON.",
+          "required": true
+        }
+      ],
+      "source_page": 1,
+      "citations": ["CIS-Ubuntu-24.04-4.2.7"],
+      "confidence": 0.9,
+      "status": "approved",
+      "tags": ["firewall", "network"],
+      "candidate_modules": ["cis_audit", "baseline_harden", "drift_check"]
+    }
+  ]
+}

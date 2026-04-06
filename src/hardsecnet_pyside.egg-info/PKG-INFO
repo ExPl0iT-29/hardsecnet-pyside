@@ -1,0 +1,46 @@
+Metadata-Version: 2.4
+Name: hardsecnet-pyside
+Version: 0.1.0
+Summary: HardSecNet PySide6 benchmark-aware hardening studio
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: PySide6>=6.8
+Requires-Dist: PyMuPDF>=1.26.0
+Requires-Dist: fastapi>=0.115
+Requires-Dist: httpx>=0.28
+Requires-Dist: passlib[bcrypt]>=1.7
+Requires-Dist: pydantic-settings>=2.8
+Requires-Dist: PyJWT>=2.10
+Requires-Dist: sqlmodel>=0.0.24
+Requires-Dist: uvicorn>=0.34
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+
+# HardSecNet PySide6
+
+`hardsecnet-pyside` is the new desktop workbench for HardSecNet.
+
+It is designed as a benchmark-aware hardening studio for Windows and Linux with:
+
+- built-in and imported benchmark profiles
+- approval-gated hardening orchestration
+- explainable AI-assisted reasoning
+- JSON, HTML, and PDF reporting
+- local SQLite history ready for future fleet synchronization
+
+## Run
+
+```powershell
+cd E:\T\hardsecnet\hardsecnet-pyside
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .[dev]
+hardsecnet-pyside
+```
+
+## Test
+
+```powershell
+cd E:\T\hardsecnet\hardsecnet-pyside
+.\.venv\Scripts\python.exe -m pytest -q tests
+```

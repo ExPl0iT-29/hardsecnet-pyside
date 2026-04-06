@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hardsecnet-pyside"
+version = "0.1.0"
+description = "HardSecNet PySide6 benchmark-aware hardening studio"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "PySide6>=6.8",
+  "PyMuPDF>=1.26.0",
+  "fastapi>=0.115",
+  "httpx>=0.28",
+  "passlib>=1.7",
+  "pydantic-settings>=2.8",
+  "PyJWT>=2.10",
+  "sqlmodel>=0.0.24",
+  "uvicorn>=0.34",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+hardsecnet-pyside = "hardsecnet_pyside.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hardsecnet_pyside = ["resources/*.json"]

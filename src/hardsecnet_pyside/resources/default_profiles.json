@@ -1,0 +1,49 @@
+{
+  "profiles": [
+    {
+      "id": "default_windows_desktop",
+      "name": "Default Windows Desktop",
+      "os_family": "windows",
+      "description": "A balanced Windows desktop baseline that captures snapshot, audit, hardening, and drift comparison.",
+      "benchmark_ids": ["CIS-Windows-11-1.1.1", "CIS-Windows-11-1.1.2", "CIS-Windows-11-1.4.1"],
+      "module_ids": ["baseline_snapshot", "cis_audit", "baseline_harden", "drift_check"],
+      "strictness": "default",
+      "built_in": true,
+      "review_required": false
+    },
+    {
+      "id": "default_ubuntu_desktop",
+      "name": "Default Ubuntu Desktop",
+      "os_family": "linux",
+      "description": "A balanced Ubuntu desktop baseline aligned with the current Linux toolkit and benchmark findings.",
+      "benchmark_ids": ["CIS-Ubuntu-24.04-1.7.6", "CIS-Ubuntu-24.04-4.2.7", "CIS-Ubuntu-24.04-Networking"],
+      "module_ids": ["baseline_snapshot", "cis_audit", "baseline_harden", "drift_check"],
+      "strictness": "default",
+      "built_in": true,
+      "review_required": false
+    },
+    {
+      "id": "audit_only",
+      "name": "Audit Only",
+      "os_family": "windows",
+      "description": "Collect audit evidence and reporting artifacts without applying remediation.",
+      "benchmark_ids": ["CIS-Windows-11-1.4.1"],
+      "module_ids": ["cis_audit", "drift_check"],
+      "strictness": "audit_only",
+      "built_in": true,
+      "review_required": false
+    },
+    {
+      "id": "strict_candidate",
+      "name": "Strict Candidate",
+      "os_family": "windows",
+      "description": "A stricter candidate baseline intended for review-heavy hardening campaigns and report-driven approvals.",
+      "benchmark_ids": ["CIS-Windows-11-1.1.1", "CIS-Windows-11-1.1.2", "CIS-Windows-11-1.4.1"],
+      "module_ids": ["baseline_snapshot", "cis_audit", "baseline_harden", "drift_check"],
+      "strictness": "strict_candidate",
+      "built_in": true,
+      "review_required": true
+    }
+  ]
+}
+

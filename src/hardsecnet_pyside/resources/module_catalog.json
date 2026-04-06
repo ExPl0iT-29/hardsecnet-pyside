@@ -1,0 +1,33 @@
+{
+  "modules": [
+    {
+      "id": "baseline_snapshot",
+      "name": "Baseline Snapshot",
+      "description": "Capture a restorable baseline or synthetic snapshot artifact before hardening.",
+      "os_families": ["windows", "linux"],
+      "default_enabled": true
+    },
+    {
+      "id": "cis_audit",
+      "name": "CIS Audit",
+      "description": "Collect audit evidence and normalize findings against built-in or imported benchmark controls.",
+      "os_families": ["windows", "linux"],
+      "default_enabled": true
+    },
+    {
+      "id": "baseline_harden",
+      "name": "Baseline Harden",
+      "description": "Execute approved baseline hardening steps through the legacy Windows or Linux adapters.",
+      "os_families": ["windows", "linux"],
+      "default_enabled": true
+    },
+    {
+      "id": "drift_check",
+      "name": "Drift Compare",
+      "description": "Compare before and after posture to highlight benchmark deltas and drift movement.",
+      "os_families": ["windows", "linux"],
+      "default_enabled": true
+    }
+  ]
+}
+

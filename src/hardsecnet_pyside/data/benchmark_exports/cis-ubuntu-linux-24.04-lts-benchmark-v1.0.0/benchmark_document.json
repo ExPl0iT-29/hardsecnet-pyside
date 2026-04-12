@@ -1,0 +1,15 @@
+{
+  "id": "doc-d099f06547be",
+  "imported_at": "2026-04-07T17:07:01.899366+00:00",
+  "name": "CIS Ubuntu Linux 24.04 LTS Benchmark",
+  "os_family": "linux",
+  "provenance": {
+    "filename": "CIS_Ubuntu_Linux_24.04_LTS_Benchmark_v1.0.0.pdf",
+    "page_count": 1078
+  },
+  "source_hash": "8ebe23d21c23e383c81620ad04655e3b1d8fdf0b6eb9ddfdb7a97d0a5b5e7ef1",
+  "source_path": "E:\\T\\hardsecnet\\hardsecnet-pyside\\runtime\\imports\\CIS_Ubuntu_Linux_24.04_LTS_Benchmark_v1.0.0.pdf",
+  "source_type": "pdf-text",
+  "status": "review_required",
+  "version": "v1.0.0"
+}

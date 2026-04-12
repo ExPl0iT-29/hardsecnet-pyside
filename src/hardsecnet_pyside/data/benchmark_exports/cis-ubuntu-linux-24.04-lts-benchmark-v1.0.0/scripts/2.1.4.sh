@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# CIS Benchmark: CIS Ubuntu Linux 24.04 LTS Benchmark
+# Control: 2.1.4 - Ensure dns server services are not in use
+# Source Page: 238
+# Confidence: 0.96
+# Status: review_required
+
+# Audit guidance extracted from the benchmark
+# Run the following command to verify bind9 is not installed:
+# # dpkg-query -s bind9 &>/dev/null && echo "bind9 is installed"
+# Nothing should be returned.
+# - OR -
+# - IF - the package is required for dependencies:
+# Run the following command to verify named.service is not enabled:
+# # systemctl is-enabled named.service 2>/dev/null | grep 'enabled'
+# Nothing should be returned
+# Run the following command to verify the named.service is not active:
+# # systemctl is-active named.service 2>/dev/null | grep '^active'
+# Nothing should be returned
+# Note: If the package is required for a dependency
+# -
+# Ensure the dependent package is approved by local site policy
+# -
+# Ensure stopping and masking the service and/or socket meets local site policy
+
+# Remediation candidate
+# systemctl stop named.service
+# OR -
+# IF - the bind9 package is required as a dependency:
+# systemctl stop named.service
+# systemctl mask named.service
+
+# TODO: replace the commented/manual steps above with validated bash remediation logic.

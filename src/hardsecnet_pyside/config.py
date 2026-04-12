@@ -14,6 +14,8 @@ class AppPaths:
     reports_dir: Path
     logs_dir: Path
     imports_dir: Path
+    generated_scripts_dir: Path
+    benchmark_exports_dir: Path
     database_path: Path
     windows_repo: Path
     linux_repo: Path
@@ -30,6 +32,8 @@ class AppPaths:
             reports_dir=runtime_dir / "reports",
             logs_dir=runtime_dir / "logs",
             imports_dir=runtime_dir / "imports",
+            generated_scripts_dir=runtime_dir / "generated_scripts",
+            benchmark_exports_dir=project_root / "src" / "hardsecnet_pyside" / "data" / "benchmark_exports",
             database_path=runtime_dir / "hardsecnet.db",
             windows_repo=workspace_root / "sw" / "hardsecnet-windows",
             linux_repo=workspace_root / "sw" / "HardSecNetLinux",
@@ -42,6 +46,8 @@ class AppPaths:
             self.reports_dir,
             self.logs_dir,
             self.imports_dir,
+            self.generated_scripts_dir,
+            self.benchmark_exports_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 

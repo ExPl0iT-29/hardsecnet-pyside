@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# CIS Benchmark: CIS Ubuntu Linux 24.04 LTS Benchmark
+# Control: 6.2.4.8 - Ensure audit tools mode is configured
+# Source Page: 917
+# Confidence: 0.96
+# Status: review_required
+
+# Audit guidance extracted from the benchmark
+# Run the following script to verify the audit tools are mode 0755 or more restrictive:
+# #!/usr/bin/env bash
+# {
+# l_output="" l_output2="" l_perm_mask="0022"
+# l_maxperm="$( printf '%o' $(( 0777 & ~$l_perm_mask )) )"
+# a_audit_tools=("/sbin/auditctl" "/sbin/aureport" "/sbin/ausearch"
+# "/sbin/autrace" "/sbin/auditd" "/sbin/augenrules")
+# for l_audit_tool in "${a_audit_tools[@]}"; do
+# l_mode="$(stat -Lc '%#a' "$l_audit_tool")"
+# if [ $(( "$l_mode" & "$l_perm_mask" )) -gt 0 ]; then
+# l_output2="$l_output2\n - Audit tool \"$l_audit_tool\" is mode:
+# \"$l_mode\" and should be mode: \"$l_maxperm\" or more restrictive"
+# else
+# l_output="$l_output\n - Audit tool \"$l_audit_tool\" is correctly
+# configured to mode: \"$l_mode\""
+# fi
+# done
+# if [ -z "$l_output2" ]; then
+# echo -e "\n- Audit Result:\n ** PASS **\n - * Correctly configured *
+# :$l_output"
+# else
+# echo -e "\n- Audit Result:\n ** FAIL **\n - * Reasons for audit
+# failure * :$l_output2\n"
+# [ -n "$l_output" ] && echo -e "\n - * Correctly configured *
+# :\n$l_output\n"
+# fi
+# unset a_audit_tools
+# }
+
+# Remediation candidate
+# chmod go-w /sbin/auditctl /sbin/aureport /sbin/ausearch /sbin/autrace
+
+# TODO: replace the commented/manual steps above with validated bash remediation logic.

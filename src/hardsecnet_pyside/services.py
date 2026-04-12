@@ -445,6 +445,17 @@ class HardSecNetService:
         imported_target = self.paths.imports_dir / path.name
         imported_target.write_bytes(path.read_bytes())
         document.source_path = str(imported_target)
+        generated_dir = self.paths.generated_scripts_dir / document.id
+        generated_paths = self.importer.generate_script_candidates(document, items, generated_dir)
+        exported_bundle = self.importer.export_benchmark_bundle(document, items, self.paths.benchmark_exports_dir)
+        document.provenance["generated_script_dir"] = str(generated_dir)
+        document.provenance["generated_script_count"] = len(generated_paths)
+        document.provenance["generated_script_paths"] = generated_paths
+        document.provenance["export_bundle_dir"] = exported_bundle["bundle_dir"]
+        document.provenance["export_items_path"] = exported_bundle["items_path"]
+        document.provenance["export_document_path"] = exported_bundle["document_path"]
+        document.provenance["export_readme_path"] = exported_bundle["readme_path"]
+        document.provenance["export_script_dir"] = exported_bundle["scripts_dir"]
         self.repository.save_benchmark_document(document)
         self.repository.save_benchmark_items(items)
 

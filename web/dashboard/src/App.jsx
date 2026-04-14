@@ -9,15 +9,18 @@ export default function App() {
   const [jobs, setJobs] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       try {
+        setError("");
         await bootstrapAdmin("admin", "admin");
         const auth = await login("admin", "admin");
         setToken(auth.access_token);
       } catch (err) {
         setError(err.message);
+        setLoading(false);
       }
     }
     load();
@@ -27,6 +30,7 @@ export default function App() {
     if (!token) return;
     async function loadData() {
       try {
+        setError("");
         const [fleetSummary, reportList, deviceList, jobList, campaignList] = await Promise.all([
           fetchJson("/fleet/summary", token),
           fetchJson("/reports", token),
@@ -39,8 +43,10 @@ export default function App() {
         setDevices(deviceList);
         setJobs(jobList);
         setCampaigns(campaignList);
+        setLoading(false);
       } catch (err) {
         setError(err.message);
+        setLoading(false);
       }
     }
     loadData();
@@ -56,6 +62,7 @@ export default function App() {
         </div>
       </section>
       {error ? <div className="card error">{error}</div> : null}
+      {loading ? <div className="card">Connecting to control plane...</div> : null}
       <section className="grid">
         <MetricCard label="Devices" value={summary?.active_device_count ?? devices.length} />
         <MetricCard label="Queued Jobs" value={summary?.queued_job_count ?? 0} />
@@ -64,20 +71,22 @@ export default function App() {
       </section>
       <section className="dashboard-layout">
         <Panel title="Devices">
+          {devices.length === 0 ? <p>No enrolled devices yet.</p> :
           <table><thead><tr><th>Name</th><th>OS</th><th>Heartbeat</th><th>Pending</th></tr></thead>
             <tbody>{devices.map((row) => <tr key={row.device.id}><td>{row.device.name}</td><td>{row.device.os_family}</td><td>{row.heartbeat?.status ?? "unknown"}</td><td>{row.pending_jobs}</td></tr>)}</tbody>
-          </table>
+          </table>}
         </Panel>
         <Panel title="Jobs">
+          {jobs.length === 0 ? <p>No jobs yet.</p> :
           <table><thead><tr><th>ID</th><th>Device</th><th>Action</th><th>Status</th></tr></thead>
             <tbody>{jobs.map((job) => <tr key={job.id}><td>{job.id}</td><td>{job.device_id}</td><td>{job.action}</td><td>{job.status}</td></tr>)}</tbody>
-          </table>
+          </table>}
         </Panel>
         <Panel title="Campaigns">
-          <ul>{campaigns.map((campaign) => <li key={campaign.id}>{campaign.name} ({campaign.device_ids.length} devices)</li>)}</ul>
+          {campaigns.length === 0 ? <p>No campaigns yet.</p> : <ul>{campaigns.map((campaign) => <li key={campaign.id}>{campaign.name} ({campaign.device_ids.length} devices)</li>)}</ul>}
         </Panel>
         <Panel title="Reports">
-          <ul>{reports.map((report) => <li key={report.id}>{report.title}</li>)}</ul>
+          {reports.length === 0 ? <p>No reports yet.</p> : <ul>{reports.map((report) => <li key={report.id}>{report.title}</li>)}</ul>}
         </Panel>
       </section>
     </main>

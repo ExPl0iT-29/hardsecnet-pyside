@@ -100,3 +100,17 @@ def test_control_plane_enrollment_and_job_flow(tmp_path: Path) -> None:
         reports = client.get("/api/v1/reports", headers=headers)
         assert reports.status_code == 200
         assert len(reports.json()) == 1
+
+
+def test_control_plane_allows_dashboard_cors(tmp_path: Path) -> None:
+    app = _load_test_app(tmp_path)
+    with TestClient(app) as client:
+        response = client.options(
+            "/api/v1/auth/login",
+            headers={
+                "Origin": "http://127.0.0.1:4173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:4173"

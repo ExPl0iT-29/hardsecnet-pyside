@@ -36,7 +36,6 @@ class DeviceRecord:
     os_family: str
     hostname: str
     last_seen: str = field(default_factory=utc_now)
-    agent_mode: str = "local"
     tags: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -107,6 +106,42 @@ class BenchmarkItem:
     script_path: str = ""
     script_state: str = "unmapped"
     review_notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ScriptReadiness:
+    item_id: str
+    document_id: str
+    benchmark_id: str
+    title: str
+    os_family: str
+    script_path: str = ""
+    status: str = "missing"
+    reason: str = ""
+    risk_level: str = "medium"
+    commands_preview: list[str] = field(default_factory=list)
+    rollback_notes: list[str] = field(default_factory=list)
+    review_notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ScriptExecutionRecord:
+    id: str
+    benchmark_item_id: str
+    benchmark_id: str
+    document_id: str
+    mode: str
+    status: str
+    command: str = ""
+    output: str = ""
+    error: str = ""
+    artifact_path: str = ""
+    operator: str = "operator"
+    allow_execute: bool = False
+    readiness_status: str = ""
+    risk_level: str = ""
+    created_at: str = field(default_factory=utc_now)
+    completed_at: str = ""
 
 
 @dataclass(slots=True)
@@ -272,90 +307,3 @@ class NetworkCheck:
     status: str
     details: str
     benchmark_refs: list[str] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class AgentManifest:
-    device_id: str
-    agent_version: str
-    capabilities: list[str]
-    last_sync: str = field(default_factory=utc_now)
-
-
-@dataclass(slots=True)
-class AgentHeartbeat:
-    device_id: str
-    status: str
-    queued_jobs: int
-    observed_at: str = field(default_factory=utc_now)
-    details: dict[str, Any] = field(default_factory=dict)
-    id: str = ""
-
-
-@dataclass(slots=True)
-class JobRequest:
-    device_id: str
-    action: str
-    payload: dict[str, Any]
-    approval_required: bool = True
-    status: str = "queued"
-    approval_state: str = "approved"
-    assigned_to: str = ""
-    created_at: str = field(default_factory=utc_now)
-    claimed_at: str = ""
-    completed_at: str = ""
-    result_summary: str = ""
-    artifact_paths: list[str] = field(default_factory=list)
-    error: str = ""
-    updated_at: str = field(default_factory=utc_now)
-    id: str = ""
-
-
-@dataclass(slots=True)
-class JobResultEnvelope:
-    job_id: str
-    device_id: str
-    status: str
-    summary: str
-    artifacts: list[str] = field(default_factory=list)
-    run_id: str = ""
-    reported_at: str = field(default_factory=utc_now)
-    details: dict[str, Any] = field(default_factory=dict)
-    id: str = ""
-
-
-@dataclass(slots=True)
-class RunSyncEnvelope:
-    run: RunRecord
-    findings: list[ComplianceFinding]
-    comparisons: list[ComparisonDelta]
-    reports: list[ReportBundle]
-
-
-@dataclass(slots=True)
-class ComparisonCampaign:
-    id: str
-    name: str
-    device_ids: list[str]
-    benchmark_scope: list[str]
-    created_at: str = field(default_factory=utc_now)
-
-
-@dataclass(slots=True)
-class FleetSnapshot:
-    devices: list[DeviceRecord]
-    manifests: list[AgentManifest]
-    heartbeats: list[AgentHeartbeat]
-    jobs: list[JobRequest]
-    job_results: list[JobResultEnvelope]
-    campaigns: list[ComparisonCampaign]
-    device_count: int = 0
-    online_device_count: int = 0
-    queued_job_count: int = 0
-    in_progress_job_count: int = 0
-    completed_job_count: int = 0
-    device_count: int = 0
-    online_device_count: int = 0
-    queued_job_count: int = 0
-    in_progress_job_count: int = 0
-    completed_job_count: int = 0

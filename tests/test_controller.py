@@ -62,3 +62,49 @@ def test_import_benchmark_creates_profile_and_document(tmp_path: Path) -> None:
     assert len(controller.list_benchmark_documents()) == before_documents + 1
     assert len(controller.list_profiles()) >= before_profiles + 1
     assert controller.list_ai_tasks(document.id)
+
+
+def test_script_readiness_and_dry_run_record_artifact(tmp_path: Path) -> None:
+    controller = HardSecNetController(project_root=tmp_path / "hardsecnet-pyside")
+    import_path = tmp_path / "cis_ubuntu_sample.txt"
+    import_path.write_text(
+        "\n".join(
+            [
+                "3.2.1 Ensure dccp kernel module is not available",
+                "Remediation:",
+                "Run modprobe -r dccp to unload the module after approval.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    document = controller.import_benchmark(import_path)
+    items = controller.list_benchmark_items(document.id)
+    readiness = controller.list_script_readiness(document.id)
+
+    assert items
+    assert readiness
+    assert readiness[0].item_id == items[0].id
+    assert Path(readiness[0].script_path).exists()
+    assert readiness[0].status == "review_required"
+
+    execution = controller.run_script_dry_run(readiness[0].item_id, operator="pytest")
+
+    assert execution.status == "dry_run_recorded"
+    assert execution.mode == "dry_run"
+    assert execution.operator == "pytest"
+    assert execution.readiness_status == "review_required"
+    assert Path(execution.artifact_path).exists()
+    assert controller.list_script_executions(readiness[0].item_id)[0].id == execution.id
+
+
+def test_bootstrap_adds_curated_ready_scripts(tmp_path: Path) -> None:
+    controller = HardSecNetController(project_root=tmp_path / "hardsecnet-pyside")
+
+    readiness = controller.list_script_readiness(document_id="builtin-doc-windows")
+    ready = [item for item in readiness if item.status == "ready"]
+
+    assert ready
+    assert ready[0].script_path
+    assert Path(ready[0].script_path).exists()
+    assert ready[0].commands_preview

@@ -3,37 +3,32 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import sqlite3
 import sys
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
 from hardsecnet_pyside.agents import AgentEngine
 from hardsecnet_pyside.benchmark import BenchmarkImporter
-from hardsecnet_pyside.backend_client import ControlPlaneClient
-from hardsecnet_pyside.config import AISettings, AppPaths, ControlPlaneSettings
+from hardsecnet_pyside.config import AISettings, AppPaths
 from hardsecnet_pyside.models import (
     AITaskRecord,
     AgentRecommendation,
     ApprovalRecord,
-    AgentHeartbeat,
-    AgentManifest,
     BenchmarkDocument,
     BenchmarkItem,
     ComparisonDelta,
-    ComparisonCampaign,
     ComplianceFinding,
     DeviceRecord,
     ModuleDefinition,
     ModuleResult,
     NetworkCheck,
     ProfileTemplate,
-    JobRequest,
-    JobResultEnvelope,
     ReportBundle,
     RunRecord,
+    ScriptExecutionRecord,
+    ScriptReadiness,
     StepResult,
     utc_now,
 )
@@ -68,45 +63,14 @@ def _sort_iso_desc(items: Sequence[Any], attr: str) -> list[Any]:
     return sorted(items, key=lambda item: getattr(item, attr, ""), reverse=True)
 
 
-@dataclass(slots=True)
-class FleetDeviceRow:
-    device: DeviceRecord
-    manifest: AgentManifest | None
-    heartbeat_status: str
-    queued_jobs: int
-
-
-@dataclass(slots=True)
-class FleetJobRow:
-    job: JobRequest
-    status: str
-    claimed_at: str
-    completed_at: str
-    summary: str
-    artifacts: list[str]
-
-
-@dataclass(slots=True)
-class FleetSnapshot:
-    devices: list[FleetDeviceRow]
-    jobs: list[FleetJobRow]
-    results: list[JobResultEnvelope]
-    campaigns: list[ComparisonCampaign]
-    active_device_count: int
-    queued_job_count: int
-    completed_job_count: int
-
-
 class HardSecNetController:
     def __init__(self, project_root: Path | None = None, ai_settings: AISettings | None = None) -> None:
         self.service = HardSecNetService.bootstrap(project_root or _repo_root())
         self.paths = self.service.paths
         self.repository = self.service.repository
         self.ai_settings = ai_settings or self.service.ai_settings
-        self.control_plane = ControlPlaneClient(ControlPlaneSettings.from_env())
         self.agent_engine = self.service.agents
         self._module_catalog = self.service.list_modules()
-        self._ensure_fleet_tables()
 
     def _load_module_catalog(self) -> list[ModuleDefinition]:
         raw = _load_json_resource("module_catalog.json")
@@ -134,6 +98,23 @@ class HardSecNetController:
         self, document_id: str | None = None, os_family: str | None = None
     ) -> list[BenchmarkItem]:
         return self.service.list_benchmark_items(document_id=document_id, os_family=os_family)
+
+    def list_script_readiness(
+        self, document_id: str | None = None, os_family: str | None = None
+    ) -> list[ScriptReadiness]:
+        return self.service.list_script_readiness(document_id=document_id, os_family=os_family)
+
+    def list_script_executions(self, item_id: str | None = None) -> list[ScriptExecutionRecord]:
+        return self.service.list_script_executions(item_id=item_id)
+
+    def run_script_dry_run(
+        self,
+        item_id: str,
+        *,
+        operator: str | None = None,
+        execute: bool = False,
+    ) -> ScriptExecutionRecord:
+        return self.service.run_script_dry_run(item_id, operator=operator, execute=execute)
 
     def list_runs(self, device_id: str | None = None) -> list[RunRecord]:
         return self.service.list_runs(device_id)
@@ -168,421 +149,6 @@ class HardSecNetController:
 
     def list_ai_tasks(self, subject_id: str | None = None) -> list[AITaskRecord]:
         return self.service.list_ai_tasks(subject_id)
-
-    def _ensure_fleet_tables(self) -> None:
-        ddl = [
-            """
-            CREATE TABLE IF NOT EXISTS fleet_heartbeats (
-                id TEXT PRIMARY KEY,
-                device_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                queued_jobs INTEGER NOT NULL,
-                observed_at TEXT NOT NULL,
-                payload TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS fleet_jobs (
-                id TEXT PRIMARY KEY,
-                device_id TEXT NOT NULL,
-                action TEXT NOT NULL,
-                status TEXT NOT NULL,
-                approval_required INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                claimed_at TEXT NOT NULL,
-                completed_at TEXT NOT NULL,
-                payload TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS fleet_results (
-                job_id TEXT PRIMARY KEY,
-                device_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                payload TEXT NOT NULL
-            )
-            """,
-        ]
-        with self.repository.connect() as conn:
-            for statement in ddl:
-                conn.execute(statement)
-            conn.commit()
-
-    def _fleet_row(self, row: sqlite3.Row, cls: type[Any]) -> Any:
-        payload = json.loads(row["payload"])
-        if cls is JobRequest:
-            return JobRequest(**payload)
-        if cls is JobResultEnvelope:
-            return JobResultEnvelope(**payload)
-        if cls is AgentManifest:
-            return AgentManifest(**payload)
-        raise TypeError(f"Unsupported fleet payload type: {cls!r}")
-
-    def enroll_device(
-        self,
-        *,
-        device_id: str,
-        name: str,
-        os_family: str,
-        hostname: str,
-        agent_version: str = "1.0.0",
-        capabilities: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> AgentManifest:
-        device = DeviceRecord(
-            id=device_id,
-            name=name,
-            os_family=os_family,
-            hostname=hostname,
-            agent_mode="fleet",
-            metadata=metadata or {},
-        )
-        self.repository.save_device(device)
-        manifest = AgentManifest(
-            device_id=device.id,
-            agent_version=agent_version,
-            capabilities=capabilities or ["audit", "compare", "report-sync"],
-        )
-        self.repository.save_agent_manifest(manifest)
-        return manifest
-
-    def record_heartbeat(
-        self,
-        *,
-        device_id: str,
-        status: str,
-        queued_jobs: int,
-    ) -> AgentHeartbeat:
-        if self.repository.get_device(device_id) is None:
-            raise ValueError(f"Unknown device: {device_id}")
-        heartbeat = AgentHeartbeat(
-            id=f"hb-{device_id}",
-            device_id=device_id,
-            status=status,
-            queued_jobs=queued_jobs,
-        )
-        with self.repository.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO fleet_heartbeats (id, device_id, status, queued_jobs, observed_at, payload)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    status = excluded.status,
-                    queued_jobs = excluded.queued_jobs,
-                    observed_at = excluded.observed_at,
-                    payload = excluded.payload
-                """,
-                (
-                    f"hb-{device_id}",
-                    heartbeat.device_id,
-                    heartbeat.status,
-                    heartbeat.queued_jobs,
-                    heartbeat.observed_at,
-                    json.dumps(asdict(heartbeat), indent=2, sort_keys=True),
-                ),
-            )
-            conn.commit()
-        self.repository.save_agent_manifest(
-            AgentManifest(
-                device_id=device_id,
-                agent_version=self._manifest_for_device(device_id).agent_version
-                if self._manifest_for_device(device_id)
-                else "1.0.0",
-                capabilities=self._manifest_for_device(device_id).capabilities
-                if self._manifest_for_device(device_id)
-                else ["audit", "compare", "report-sync"],
-                last_sync=heartbeat.observed_at,
-            )
-        )
-        return heartbeat
-
-    def queue_job(
-        self,
-        *,
-        device_id: str,
-        action: str,
-        payload: dict[str, Any],
-        approval_required: bool = True,
-    ) -> JobRequest:
-        if self.repository.get_device(device_id) is None:
-            raise ValueError(f"Unknown device: {device_id}")
-        job = JobRequest(
-            id=f"job-{uuid.uuid4().hex[:12]}",
-            device_id=device_id,
-            action=action,
-            payload=payload,
-            approval_required=approval_required,
-        )
-        with self.repository.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO fleet_jobs (id, device_id, action, status, approval_required, created_at, claimed_at, completed_at, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    job.id,
-                    job.device_id,
-                    job.action,
-                    "pending",
-                    int(job.approval_required),
-                    utc_now(),
-                    "",
-                    "",
-                    json.dumps(asdict(job), indent=2, sort_keys=True),
-                ),
-            )
-            conn.commit()
-        self.record_heartbeat(
-            device_id=device_id,
-            status="queued",
-            queued_jobs=self.count_pending_jobs(device_id=device_id),
-        )
-        return job
-
-    def claim_job(self, job_id: str) -> JobRequest:
-        with self.repository.connect() as conn:
-            row = conn.execute("SELECT * FROM fleet_jobs WHERE id = ?", (job_id,)).fetchone()
-            if row is None:
-                raise ValueError(f"Unknown job: {job_id}")
-            payload = json.loads(row["payload"])
-            payload["id"] = row["id"]
-            payload["device_id"] = row["device_id"]
-            payload["action"] = row["action"]
-            payload["approval_required"] = bool(row["approval_required"])
-            job = JobRequest(**payload)
-            conn.execute(
-                """
-                UPDATE fleet_jobs
-                SET status = ?, claimed_at = ?, payload = ?
-                WHERE id = ?
-                """,
-                (
-                    "in_progress",
-                    utc_now(),
-                    json.dumps(asdict(job), indent=2, sort_keys=True),
-                    job_id,
-                ),
-            )
-            conn.commit()
-        self.record_heartbeat(
-            device_id=job.device_id,
-            status="in_progress",
-            queued_jobs=self.count_pending_jobs(device_id=job.device_id),
-        )
-        return job
-
-    def complete_job(
-        self,
-        job_id: str,
-        *,
-        summary: str,
-        artifacts: list[str] | None = None,
-        status: str = "completed",
-    ) -> JobResultEnvelope:
-        with self.repository.connect() as conn:
-            row = conn.execute("SELECT * FROM fleet_jobs WHERE id = ?", (job_id,)).fetchone()
-            if row is None:
-                raise ValueError(f"Unknown job: {job_id}")
-            job_payload = json.loads(row["payload"])
-            device_id = row["device_id"]
-            envelope = JobResultEnvelope(
-                id=f"result-{job_id}",
-                job_id=job_id,
-                device_id=device_id,
-                status=status,
-                summary=summary,
-                artifacts=list(artifacts or []),
-            )
-            conn.execute(
-                """
-                UPDATE fleet_jobs
-                SET status = ?, completed_at = ?, payload = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    utc_now(),
-                    json.dumps(job_payload, indent=2, sort_keys=True),
-                    job_id,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO fleet_results (job_id, device_id, status, summary, payload)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(job_id) DO UPDATE SET
-                    device_id = excluded.device_id,
-                    status = excluded.status,
-                    summary = excluded.summary,
-                    payload = excluded.payload
-                """,
-                (
-                    envelope.job_id,
-                    envelope.device_id,
-                    envelope.status,
-                    envelope.summary,
-                    json.dumps(asdict(envelope), indent=2, sort_keys=True),
-                ),
-            )
-            conn.commit()
-        self.record_heartbeat(
-            device_id=device_id,
-            status=status,
-            queued_jobs=self.count_pending_jobs(device_id=device_id),
-        )
-        return envelope
-
-    def list_fleet_jobs(self, device_id: str | None = None) -> list[JobRequest]:
-        query = "SELECT payload FROM fleet_jobs"
-        params: tuple[Any, ...] = ()
-        if device_id:
-            query += " WHERE device_id = ?"
-            params = (device_id,)
-        with self.repository.connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-        jobs = [JobRequest(**json.loads(row["payload"])) for row in rows]
-        return sorted(jobs, key=lambda item: item.id, reverse=True)
-
-    def list_fleet_results(self, device_id: str | None = None) -> list[JobResultEnvelope]:
-        query = "SELECT payload FROM fleet_results"
-        params: tuple[Any, ...] = ()
-        if device_id:
-            query += " WHERE device_id = ?"
-            params = (device_id,)
-        with self.repository.connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-        results = [JobResultEnvelope(**json.loads(row["payload"])) for row in rows]
-        return sorted(results, key=lambda item: item.job_id, reverse=True)
-
-    def list_heartbeats(self) -> list[AgentHeartbeat]:
-        with self.repository.connect() as conn:
-            rows = conn.execute("SELECT payload FROM fleet_heartbeats").fetchall()
-        heartbeats = [AgentHeartbeat(**json.loads(row["payload"])) for row in rows]
-        return sorted(heartbeats, key=lambda item: item.observed_at, reverse=True)
-
-    def list_campaigns(self) -> list[ComparisonCampaign]:
-        with self.repository.connect() as conn:
-            rows = conn.execute("SELECT payload FROM comparison_campaigns").fetchall()
-        campaigns = [ComparisonCampaign(**json.loads(row["payload"])) for row in rows]
-        return sorted(campaigns, key=lambda item: item.created_at, reverse=True)
-
-    def create_campaign(
-        self, *, name: str, device_ids: list[str], benchmark_scope: list[str]
-    ) -> ComparisonCampaign:
-        campaign = ComparisonCampaign(
-            id=f"camp-{uuid.uuid4().hex[:12]}",
-            name=name,
-            device_ids=device_ids,
-            benchmark_scope=benchmark_scope,
-        )
-        self.repository.save_campaign(campaign)
-        return campaign
-
-    def count_pending_jobs(self, device_id: str | None = None) -> int:
-        query = "SELECT COUNT(*) AS count FROM fleet_jobs WHERE status = 'pending'"
-        params: tuple[Any, ...] = ()
-        if device_id:
-            query += " AND device_id = ?"
-            params = (device_id,)
-        with self.repository.connect() as conn:
-            row = conn.execute(query, params).fetchone()
-        return int(row["count"]) if row else 0
-
-    def _manifest_for_device(self, device_id: str) -> AgentManifest | None:
-        with self.repository.connect() as conn:
-            row = conn.execute("SELECT payload FROM agent_manifests WHERE device_id = ?", (device_id,)).fetchone()
-        if row is None:
-            return None
-        return AgentManifest(**json.loads(row["payload"]))
-
-    def get_fleet_snapshot(self) -> FleetSnapshot:
-        devices: list[FleetDeviceRow] = []
-        latest_heartbeats = {hb.device_id: hb for hb in self.list_heartbeats()}
-        pending_by_device: dict[str, int] = {}
-        for job in self._fleet_job_requests():
-            if job.action:
-                pending_by_device[job.device_id] = pending_by_device.get(job.device_id, 0) + (
-                    1 if self._job_status(job.id) == "pending" else 0
-                )
-        for device in self.repository.list_devices():
-            manifest = self._manifest_for_device(device.id)
-            heartbeat = latest_heartbeats.get(device.id)
-            devices.append(
-                FleetDeviceRow(
-                    device=device,
-                    manifest=manifest,
-                    heartbeat_status=heartbeat.status if heartbeat else "unknown",
-                    queued_jobs=pending_by_device.get(device.id, 0),
-                )
-            )
-        jobs = [
-            FleetJobRow(
-                job=job,
-                status=self._job_status(job.id),
-                claimed_at=self._job_claimed_at(job.id),
-                completed_at=self._job_completed_at(job.id),
-                summary=self._job_summary(job.id),
-                artifacts=self._job_artifacts(job.id),
-            )
-            for job in self._fleet_job_requests()
-        ]
-        results = self._fleet_result_rows()
-        campaigns = self._fleet_campaign_rows()
-        return FleetSnapshot(
-            devices=devices,
-            jobs=jobs,
-            results=results,
-            campaigns=campaigns,
-            active_device_count=len(devices),
-            queued_job_count=sum(row.queued_jobs for row in devices),
-            completed_job_count=len(results),
-        )
-
-    def _job_status(self, job_id: str) -> str:
-        with self.repository.connect() as conn:
-            row = conn.execute("SELECT status FROM fleet_jobs WHERE id = ?", (job_id,)).fetchone()
-        return str(row["status"]) if row else "unknown"
-
-    def _fleet_job_requests(self) -> list[JobRequest]:
-        with self.repository.connect() as conn:
-            rows = conn.execute("SELECT payload FROM fleet_jobs").fetchall()
-        jobs = [JobRequest(**json.loads(row["payload"])) for row in rows]
-        return sorted(jobs, key=lambda item: item.id, reverse=True)
-
-    def _job_claimed_at(self, job_id: str) -> str:
-        with self.repository.connect() as conn:
-            row = conn.execute("SELECT claimed_at FROM fleet_jobs WHERE id = ?", (job_id,)).fetchone()
-        return str(row["claimed_at"]) if row else ""
-
-    def _job_completed_at(self, job_id: str) -> str:
-        with self.repository.connect() as conn:
-            row = conn.execute("SELECT completed_at FROM fleet_jobs WHERE id = ?", (job_id,)).fetchone()
-        return str(row["completed_at"]) if row else ""
-
-    def _job_summary(self, job_id: str) -> str:
-        with self.repository.connect() as conn:
-            row = conn.execute("SELECT summary FROM fleet_results WHERE job_id = ?", (job_id,)).fetchone()
-        return str(row["summary"]) if row else ""
-
-    def _job_artifacts(self, job_id: str) -> list[str]:
-        with self.repository.connect() as conn:
-            row = conn.execute("SELECT payload FROM fleet_results WHERE job_id = ?", (job_id,)).fetchone()
-        if row is None:
-            return []
-        return JobResultEnvelope(**json.loads(row["payload"])).artifacts
-
-    def _fleet_result_rows(self) -> list[JobResultEnvelope]:
-        with self.repository.connect() as conn:
-            rows = conn.execute("SELECT payload FROM fleet_results").fetchall()
-        results = [JobResultEnvelope(**json.loads(row["payload"])) for row in rows]
-        return sorted(results, key=lambda item: item.job_id, reverse=True)
-
-    def _fleet_campaign_rows(self) -> list[ComparisonCampaign]:
-        with self.repository.connect() as conn:
-            rows = conn.execute("SELECT payload FROM comparison_campaigns").fetchall()
-        campaigns = [ComparisonCampaign(**json.loads(row["payload"])) for row in rows]
-        return sorted(campaigns, key=lambda item: item.created_at, reverse=True)
 
     def get_dashboard_snapshot(self):
         return self.service.get_dashboard_snapshot()
@@ -629,193 +195,6 @@ class HardSecNetController:
             "latest_report": self.latest_report(snapshot.runs[0].id if snapshot.runs else None),
             "modules": snapshot.module_catalog,
         }
-
-    def fleet_snapshot(self) -> FleetSnapshot:
-        if self.control_plane.enabled:
-            summary = self.control_plane.fleet_summary()
-            devices = [
-                FleetDeviceRow(
-                    device=DeviceRecord(
-                        id=row["device"]["id"],
-                        name=row["device"]["name"],
-                        os_family=row["device"]["os_family"],
-                        hostname=row["device"]["hostname"],
-                        last_seen=row["device"]["last_seen"],
-                        agent_mode=row["device"].get("agent_mode", "fleet"),
-                        tags=row["device"].get("tags", []),
-                        metadata=row["device"].get("metadata", {}),
-                    ),
-                    manifest=AgentManifest(**row["manifest"]) if row.get("manifest") else None,
-                    heartbeat_status=(row.get("heartbeat") or {}).get("status", "unknown"),
-                    queued_jobs=row.get("pending_jobs", 0),
-                )
-                for row in summary.get("devices", [])
-            ]
-            jobs = [
-                FleetJobRow(
-                    job=JobRequest(**job),
-                    status=job["status"],
-                    claimed_at=job.get("claimed_at") or "",
-                    completed_at=job.get("completed_at") or "",
-                    summary=job.get("result_summary", ""),
-                    artifacts=job.get("artifact_paths", []),
-                )
-                for job in summary.get("jobs", [])
-            ]
-            results = [
-                JobResultEnvelope(
-                    id=item["id"],
-                    job_id=item.get("job_id", ""),
-                    device_id=item["device_id"],
-                    status="completed",
-                    summary=item.get("summary", ""),
-                    artifacts=[path for path in [item.get("json_path", ""), item.get("html_path", ""), item.get("pdf_path", "")] if path],
-                    run_id=item.get("run_id", ""),
-                )
-                for item in summary.get("reports", [])
-            ]
-            return FleetSnapshot(
-                devices=devices,
-                jobs=jobs,
-                results=results,
-                campaigns=[ComparisonCampaign(**item) for item in summary.get("campaigns", [])],
-                active_device_count=summary.get("active_device_count", len(devices)),
-                queued_job_count=summary.get("queued_job_count", 0),
-                completed_job_count=summary.get("completed_job_count", 0),
-            )
-        return self.get_fleet_snapshot()
-
-    def enroll_fleet_device(
-        self,
-        *,
-        device_id: str,
-        name: str,
-        os_family: str,
-        hostname: str,
-        agent_version: str = "1.0.0",
-        capabilities: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> AgentManifest:
-        if self.control_plane.enabled:
-            enrolled = self.control_plane.enroll_device(
-                device_id=device_id,
-                name=name,
-                hostname=hostname,
-                os_family=os_family,
-                agent_version=agent_version,
-                capabilities=capabilities or ["remote-audit", "remote-harden", "remote-compare"],
-                metadata=metadata,
-            )
-            return AgentManifest(**enrolled["manifest"])
-        return self.enroll_device(
-            device_id=device_id,
-            name=name,
-            os_family=os_family,
-            hostname=hostname,
-            agent_version=agent_version,
-            capabilities=capabilities,
-            metadata=metadata,
-        )
-
-    def record_fleet_heartbeat(self, device_id: str, status: str, queued_jobs: int) -> AgentHeartbeat:
-        if self.control_plane.enabled:
-            return AgentHeartbeat(
-                **self.control_plane.record_heartbeat(
-                    device_id=device_id,
-                    status=status,
-                    queued_jobs=queued_jobs,
-                )
-            )
-        return self.record_heartbeat(device_id=device_id, status=status, queued_jobs=queued_jobs)
-
-    def queue_fleet_job(
-        self,
-        device_id: str,
-        action: str,
-        payload: dict[str, Any],
-        approval_required: bool = True,
-    ) -> JobRequest:
-        if self.control_plane.enabled:
-            job = self.control_plane.create_job(
-                device_id=device_id,
-                action=action,
-                payload=payload,
-                approval_required=approval_required,
-            )
-            if approval_required:
-                job = self.control_plane.approve_job(job["id"])
-            return JobRequest(**job)
-        return self.queue_job(
-            device_id=device_id,
-            action=action,
-            payload=payload,
-            approval_required=approval_required,
-        )
-
-    def claim_fleet_job(self, job_id: str) -> JobRequest:
-        if self.control_plane.enabled:
-            return JobRequest(**self.control_plane.claim_job(job_id))
-        return self.claim_job(job_id)
-
-    def complete_fleet_job(
-        self,
-        job_id: str,
-        *,
-        summary: str,
-        artifacts: list[str] | None = None,
-        status: str = "completed",
-    ) -> JobResultEnvelope:
-        if self.control_plane.enabled:
-            jobs = self.control_plane.list_jobs()
-            job = next((item for item in jobs if item["id"] == job_id), None)
-            if job is None:
-                raise ValueError(f"Unknown remote job: {job_id}")
-            result = self.control_plane.submit_job_result(
-                job_id,
-                device_id=job["device_id"],
-                status=status,
-                summary=summary,
-                artifacts=artifacts or [],
-                details={},
-                run_id=f"run-{job_id}",
-            )
-            return JobResultEnvelope(**result)
-        return self.complete_job(job_id, summary=summary, artifacts=artifacts, status=status)
-
-    def create_fleet_campaign(
-        self, *, name: str, device_ids: list[str], benchmark_scope: list[str]
-    ) -> ComparisonCampaign:
-        if self.control_plane.enabled:
-            return ComparisonCampaign(**self.control_plane.create_campaign(name=name, device_ids=device_ids, benchmark_scope=benchmark_scope))
-        return self.create_campaign(name=name, device_ids=device_ids, benchmark_scope=benchmark_scope)
-
-    def list_fleet_devices(self) -> list[FleetDeviceRow]:
-        return self.fleet_snapshot().devices
-
-    def list_fleet_jobs(self) -> list[FleetJobRow]:
-        if self.control_plane.enabled:
-            return self.fleet_snapshot().jobs
-        return [
-            FleetJobRow(
-                job=job,
-                status=self._job_status(job.id),
-                claimed_at=self._job_claimed_at(job.id),
-                completed_at=self._job_completed_at(job.id),
-                summary=self._job_summary(job.id),
-                artifacts=self._job_artifacts(job.id),
-            )
-            for job in self._fleet_job_requests()
-        ]
-
-    def list_fleet_results(self) -> list[JobResultEnvelope]:
-        if self.control_plane.enabled:
-            return self.fleet_snapshot().results
-        return self._fleet_result_rows()
-
-    def list_fleet_campaigns(self) -> list[ComparisonCampaign]:
-        if self.control_plane.enabled:
-            return self.fleet_snapshot().campaigns
-        return self._fleet_campaign_rows()
 
     def import_benchmark(self, source_path: str | Path) -> BenchmarkDocument:
         return self.service.import_benchmark(source_path).document
@@ -876,7 +255,7 @@ class HardSecNetController:
                 return run
         return None
 
-    def create_demo_run(self, profile_id: str | None = None) -> RunRecord:
+    def create_local_baseline_run(self, profile_id: str | None = None) -> RunRecord:
         device = self.current_device()
         profile = self.repository.get_profile(profile_id) if profile_id else None
         if profile is None:
@@ -968,7 +347,7 @@ class HardSecNetController:
                     severity=self._severity_for_item(item, status),
                     evidence=[*item.citations, device.hostname, profile.name],
                     expected=item.recommendation or "Aligned to benchmark guidance",
-                    actual="Captured through deterministic demo run.",
+                    actual="Captured through deterministic local baseline run.",
                     source_page=item.source_page,
                     module_id=item.candidate_modules[0] if item.candidate_modules else "",
                     remediation=[step.command for step in item.remediation_steps],
@@ -1039,7 +418,7 @@ class HardSecNetController:
                 target_id=run.id,
                 decision="review_required" if any(f.status != "Compliant" for f in findings) else "approved",
                 reviewer="system",
-                notes="Deterministic demo run completed and saved for UI verification.",
+                notes="Deterministic local baseline run completed and saved for UI verification.",
             )
         )
 

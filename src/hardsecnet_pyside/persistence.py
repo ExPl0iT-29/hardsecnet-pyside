@@ -12,24 +12,20 @@ from typing import Any, Callable, Iterable, TypeVar
 from hardsecnet_pyside.config import AppPaths
 from hardsecnet_pyside.models import (
     AITaskRecord,
-    AgentHeartbeat,
-    AgentManifest,
     ApprovalRecord,
     BenchmarkDocument,
     BenchmarkItem,
     CheckLogic,
-    ComparisonCampaign,
     ComparisonDelta,
     ComplianceFinding,
     DeviceRecord,
     EvidenceField,
-    JobRequest,
-    JobResultEnvelope,
     ModuleResult,
     ProfileTemplate,
     RemediationStep,
     ReportBundle,
     RunRecord,
+    ScriptExecutionRecord,
     StepResult,
 )
 
@@ -150,48 +146,15 @@ TABLE_DEFINITIONS = {
             payload TEXT NOT NULL
         )
     """,
-    "agent_manifests": """
-        CREATE TABLE IF NOT EXISTS agent_manifests (
-            device_id TEXT PRIMARY KEY,
-            payload TEXT NOT NULL
-        )
-    """,
-    "agent_heartbeats": """
-        CREATE TABLE IF NOT EXISTS agent_heartbeats (
+    "script_executions": """
+        CREATE TABLE IF NOT EXISTS script_executions (
             id TEXT PRIMARY KEY,
-            device_id TEXT NOT NULL,
+            benchmark_item_id TEXT NOT NULL,
+            benchmark_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            mode TEXT NOT NULL,
             status TEXT NOT NULL,
-            queued_jobs INTEGER NOT NULL,
-            observed_at TEXT NOT NULL,
-            payload TEXT NOT NULL
-        )
-    """,
-    "jobs": """
-        CREATE TABLE IF NOT EXISTS jobs (
-            id TEXT PRIMARY KEY,
-            device_id TEXT NOT NULL,
-            action TEXT NOT NULL,
-            status TEXT NOT NULL,
-            approval_state TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            completed_at TEXT,
-            payload TEXT NOT NULL
-        )
-    """,
-    "job_results": """
-        CREATE TABLE IF NOT EXISTS job_results (
-            id TEXT PRIMARY KEY,
-            job_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            reported_at TEXT NOT NULL,
-            payload TEXT NOT NULL
-        )
-    """,
-    "comparison_campaigns": """
-        CREATE TABLE IF NOT EXISTS comparison_campaigns (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
             payload TEXT NOT NULL
         )
     """,
@@ -229,22 +192,23 @@ def _deserialize_run(data: dict[str, Any]) -> RunRecord:
     )
 
 
+def _deserialize_device(data: dict[str, Any]) -> DeviceRecord:
+    data.pop("agent_mode", None)
+    return DeviceRecord(**data)
+
+
 DESERIALIZERS: dict[type[Any], Callable[[dict[str, Any]], Any]] = {
     BenchmarkDocument: lambda data: BenchmarkDocument(**data),
     BenchmarkItem: _deserialize_benchmark_item,
     ProfileTemplate: lambda data: ProfileTemplate(**data),
-    DeviceRecord: lambda data: DeviceRecord(**data),
+    DeviceRecord: _deserialize_device,
     RunRecord: _deserialize_run,
     ComplianceFinding: lambda data: ComplianceFinding(**data),
     ComparisonDelta: lambda data: ComparisonDelta(**data),
     ReportBundle: lambda data: ReportBundle(**data),
     ApprovalRecord: lambda data: ApprovalRecord(**data),
     AITaskRecord: lambda data: AITaskRecord(**data),
-    AgentManifest: lambda data: AgentManifest(**data),
-    AgentHeartbeat: lambda data: AgentHeartbeat(**data),
-    JobRequest: lambda data: JobRequest(**data),
-    JobResultEnvelope: lambda data: JobResultEnvelope(**data),
-    ComparisonCampaign: lambda data: ComparisonCampaign(**data),
+    ScriptExecutionRecord: lambda data: ScriptExecutionRecord(**data),
 }
 
 
@@ -534,125 +498,25 @@ class HardSecNetRepository:
             return self._list("ai_tasks", AITaskRecord, "subject_id = ?", (subject_id,))
         return self._list("ai_tasks", AITaskRecord)
 
-    def save_agent_manifest(self, manifest: AgentManifest) -> None:
-        payload = json.dumps(asdict(manifest), indent=2, sort_keys=True)
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO agent_manifests (device_id, payload)
-                VALUES (?, ?)
-                ON CONFLICT(device_id) DO UPDATE SET payload = excluded.payload
-                """,
-                (manifest.device_id, payload),
-            )
-            conn.commit()
-
-    def list_agent_manifests(self) -> list[AgentManifest]:
-        return self._list("agent_manifests", AgentManifest)
-
-    def get_agent_manifest(self, device_id: str) -> AgentManifest | None:
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT payload FROM agent_manifests WHERE device_id = ?", (device_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        return AgentManifest(**json.loads(row["payload"]))
-
-    def save_agent_heartbeat(self, heartbeat: AgentHeartbeat) -> None:
+    def save_script_execution(self, execution: ScriptExecutionRecord) -> None:
         self._upsert(
-            "agent_heartbeats",
-            heartbeat.id,
+            "script_executions",
+            execution.id,
             {
-                "device_id": heartbeat.device_id,
-                "status": heartbeat.status,
-                "queued_jobs": heartbeat.queued_jobs,
-                "observed_at": heartbeat.observed_at,
+                "benchmark_item_id": execution.benchmark_item_id,
+                "benchmark_id": execution.benchmark_id,
+                "document_id": execution.document_id,
+                "mode": execution.mode,
+                "status": execution.status,
+                "created_at": execution.created_at,
             },
-            asdict(heartbeat),
+            asdict(execution),
         )
 
-    def list_agent_heartbeats(self, device_id: str | None = None) -> list[AgentHeartbeat]:
-        if device_id:
-            return self._list("agent_heartbeats", AgentHeartbeat, "device_id = ?", (device_id,))
-        return self._list("agent_heartbeats", AgentHeartbeat)
-
-    def latest_agent_heartbeat(self, device_id: str) -> AgentHeartbeat | None:
-        heartbeats = sorted(
-            self.list_agent_heartbeats(device_id=device_id),
-            key=lambda item: (item.observed_at, item.id),
-            reverse=True,
-        )
-        return heartbeats[0] if heartbeats else None
-
-    def save_job(self, job: JobRequest) -> None:
-        self._upsert(
-            "jobs",
-            job.id,
-            {
-                "device_id": job.device_id,
-                "action": job.action,
-                "status": job.status,
-                "approval_state": job.approval_state,
-                "created_at": job.created_at,
-                "completed_at": job.completed_at,
-            },
-            asdict(job),
-        )
-
-    def list_jobs(
-        self,
-        device_id: str | None = None,
-        status: str | None = None,
-    ) -> list[JobRequest]:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if device_id:
-            clauses.append("device_id = ?")
-            params.append(device_id)
-        if status:
-            clauses.append("status = ?")
-            params.append(status)
-        return self._list("jobs", JobRequest, " AND ".join(clauses), params)
-
-    def get_job(self, job_id: str) -> JobRequest | None:
-        return self._get("jobs", JobRequest, job_id)
-
-    def save_job_result(self, result: JobResultEnvelope) -> None:
-        result_id = result.id or f"jobresult-{uuid.uuid4().hex[:12]}"
-        result.id = result_id
-        self._upsert(
-            "job_results",
-            result.id,
-            {
-                "job_id": result.job_id,
-                "device_id": result.device_id,
-                "status": result.status,
-                "reported_at": result.reported_at,
-            },
-            asdict(result),
-        )
-
-    def list_job_results(
-        self,
-        device_id: str | None = None,
-        job_id: str | None = None,
-    ) -> list[JobResultEnvelope]:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if device_id:
-            clauses.append("device_id = ?")
-            params.append(device_id)
-        if job_id:
-            clauses.append("job_id = ?")
-            params.append(job_id)
-        return self._list("job_results", JobResultEnvelope, " AND ".join(clauses), params)
-
-    def save_campaign(self, campaign: ComparisonCampaign) -> None:
-        self._upsert("comparison_campaigns", campaign.id, {"name": campaign.name}, asdict(campaign))
-
-    def list_campaigns(self) -> list[ComparisonCampaign]:
-        return self._list("comparison_campaigns", ComparisonCampaign)
+    def list_script_executions(self, item_id: str | None = None) -> list[ScriptExecutionRecord]:
+        if item_id:
+            return self._list("script_executions", ScriptExecutionRecord, "benchmark_item_id = ?", (item_id,))
+        return self._list("script_executions", ScriptExecutionRecord)
 
     def bootstrap(self, paths: AppPaths) -> None:
         current_device_id = self.get_setting("current_device_id") or f"device-{uuid.uuid4().hex[:12]}"
@@ -665,13 +529,6 @@ class HardSecNetRepository:
             metadata={"managed_by": "hardsecnet-pyside"},
         )
         self.save_device(current_device)
-        self.save_agent_manifest(
-            AgentManifest(
-                device_id=current_device.id,
-                agent_version="0.1.0",
-                capabilities=["local-audit", "local-hardening", "reporting", "benchmark-import"],
-            )
-        )
 
         if not self.list_profiles():
             raw_profiles = json.loads(

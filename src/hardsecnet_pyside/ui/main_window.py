@@ -5,7 +5,7 @@ from PySide6 import QtWidgets
 from hardsecnet_pyside.ui.pages import (
     AiAdvisorPage,
     BenchmarksPage,
-    FleetDashboardPage,
+    DashboardPage,
     HardeningPage,
     NetworkPage,
     ReportsPage,
@@ -22,22 +22,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.refresh_all()
 
     def _build_ui(self) -> None:
+        self.setMinimumSize(1180, 760)
         root = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(root)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(16)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
 
         self.nav = QtWidgets.QListWidget()
         self.nav.setObjectName("Navigation")
         self.nav.setFixedWidth(220)
         self.nav.addItems(
-            ["Fleet", "Hardening", "Network", "AI Advisor", "Reports", "Benchmarks", "Settings"]
+            ["Dashboard", "Hardening", "Network", "AI Advisor", "Reports", "Benchmarks", "Settings"]
         )
         self.nav.currentRowChanged.connect(self._select_page)
 
         self.stack = QtWidgets.QStackedWidget()
         self.pages = {
-            "Fleet": FleetDashboardPage(self.controller, self.refresh_all),
+            "Dashboard": DashboardPage(self.controller, self.refresh_all),
             "Hardening": HardeningPage(self.controller, self.refresh_all),
             "Network": NetworkPage(self.controller, self.refresh_all),
             "AI Advisor": AiAdvisorPage(self.controller, self.refresh_all),
@@ -48,10 +49,14 @@ class MainWindow(QtWidgets.QMainWindow):
         for page in self.pages.values():
             self.stack.addWidget(page)
 
-        side = QtWidgets.QVBoxLayout()
+        side_panel = QtWidgets.QFrame()
+        side_panel.setObjectName("Sidebar")
+        side = QtWidgets.QVBoxLayout(side_panel)
+        side.setContentsMargins(14, 14, 14, 14)
+        side.setSpacing(10)
         title = QtWidgets.QLabel("HardSecNet")
         title.setObjectName("AppTitle")
-        subtitle = QtWidgets.QLabel("Benchmark-aware hardening studio")
+        subtitle = QtWidgets.QLabel("Local CIS hardening studio")
         subtitle.setObjectName("AppSubtitle")
         side.addWidget(title)
         side.addWidget(subtitle)
@@ -59,12 +64,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         refresh_button = QtWidgets.QPushButton("Refresh All")
         refresh_button.clicked.connect(self.refresh_all)
-        demo_button = QtWidgets.QPushButton("Run Demo")
-        demo_button.clicked.connect(self._run_demo)
+        baseline_button = QtWidgets.QPushButton("Run Local Baseline")
+        baseline_button.clicked.connect(self._run_local_baseline)
         side.addWidget(refresh_button)
-        side.addWidget(demo_button)
+        side.addWidget(baseline_button)
 
-        layout.addLayout(side)
+        layout.addWidget(side_panel)
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
         self.statusBar().showMessage("Ready")
@@ -73,48 +78,83 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow { background: #0b1220; color: #e5eef8; }
-            QLabel#AppTitle { font-size: 24px; font-weight: 700; color: #7ee787; }
-            QLabel#AppSubtitle { color: #9fb3c8; margin-bottom: 8px; }
-            QLabel#PageTitle { font-size: 22px; font-weight: 700; color: #d9e6ff; }
-            QLabel#PageSubtitle { color: #97a6ba; }
+            QMainWindow { background: #111318; color: #eef3f7; }
+            QWidget { color: #eef3f7; font-size: 13px; }
+            QFrame#Sidebar {
+                background: #191d24;
+                border: 1px solid #2f3742;
+                border-radius: 8px;
+            }
+            QLabel#AppTitle { font-size: 25px; font-weight: 700; color: #7dd3c7; }
+            QLabel#AppSubtitle { color: #b7c5cf; margin-bottom: 8px; }
+            QLabel#PageTitle { font-size: 24px; font-weight: 700; color: #f4f7fb; }
+            QLabel#PageSubtitle { color: #aebac5; margin-bottom: 8px; }
+            QLabel#SectionTitle { color: #e8edf2; font-size: 15px; font-weight: 700; }
+            QLabel#PanelTitle { color: #f4f7fb; font-size: 16px; font-weight: 700; }
+            QLabel#PanelText { color: #b7c5cf; }
             QListWidget#Navigation {
-                background: #111827;
-                border: 1px solid #243044;
-                border-radius: 14px;
+                background: #111318;
+                border: 1px solid #2f3742;
+                border-radius: 8px;
                 padding: 6px;
-                color: #d9e6ff;
+                color: #dce7ee;
             }
             QListWidget#Navigation::item {
                 padding: 10px 12px;
                 margin: 4px;
-                border-radius: 10px;
+                border-radius: 6px;
             }
-            QListWidget#Navigation::item:selected { background: #1f6feb; color: white; }
+            QListWidget#Navigation::item:selected { background: #257c75; color: white; }
+            QListWidget#Navigation::item:hover { background: #252b34; }
+            QFrame#MetricCard, QFrame#Panel {
+                background: #1b2028;
+                border: 1px solid #343d49;
+                border-radius: 8px;
+            }
+            QFrame#MetricCard[accent="cyan"] { border-top: 3px solid #39c5d8; }
+            QFrame#MetricCard[accent="green"] { border-top: 3px solid #7bc96f; }
+            QFrame#MetricCard[accent="amber"] { border-top: 3px solid #e3b341; }
+            QFrame#MetricCard[accent="coral"] { border-top: 3px solid #e16f5c; }
+            QFrame#MetricCard[accent="violet"] { border-top: 3px solid #a78bfa; }
+            QFrame#MetricCard[accent="blue"] { border-top: 3px solid #67a7ff; }
+            QLabel#MetricValue { font-size: 28px; font-weight: 700; color: #ffffff; }
+            QLabel#MetricLabel { color: #b7c5cf; }
             QGroupBox {
-                border: 1px solid #243044;
-                border-radius: 12px;
+                border: 1px solid #343d49;
+                border-radius: 8px;
                 margin-top: 14px;
                 padding: 12px;
-                color: #d9e6ff;
+                color: #e8edf2;
+                font-weight: 700;
             }
             QTableWidget, QTextEdit, QLineEdit, QComboBox {
-                background: #0f172a;
-                border: 1px solid #243044;
-                border-radius: 10px;
-                color: #e5eef8;
+                background: #171b22;
+                border: 1px solid #343d49;
+                border-radius: 8px;
+                color: #eef3f7;
                 padding: 6px;
             }
+            QHeaderView::section {
+                background: #252b34;
+                color: #dce7ee;
+                border: none;
+                padding: 7px;
+                font-weight: 700;
+            }
+            QTableWidget { alternate-background-color: #1f252e; selection-background-color: #257c75; }
+            QTextEdit { selection-background-color: #257c75; }
+            QComboBox::drop-down { border: none; width: 24px; }
             QPushButton {
-                background: #1f6feb;
+                background: #257c75;
                 border: none;
                 color: white;
                 padding: 10px 14px;
-                border-radius: 10px;
+                border-radius: 8px;
                 font-weight: 600;
             }
-            QPushButton:hover { background: #2b7fff; }
-            QPushButton:disabled { background: #334155; color: #7b8aa3; }
+            QPushButton:hover { background: #2f938b; }
+            QPushButton:disabled { background: #303741; color: #81909d; }
+            QStatusBar { background: #191d24; color: #b7c5cf; }
             """
         )
 
@@ -139,7 +179,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"{device.name} | {len(snapshot.reports)} reports | {len(snapshot.runs)} runs | {snapshot.ai_tasks_count} AI tasks"
         )
 
-    def _run_demo(self) -> None:
+    def _run_local_baseline(self) -> None:
         hardening = self.pages["Hardening"]
         profile_id = hardening.profile_combo.currentData() if hasattr(hardening, "profile_combo") else None
         if profile_id:

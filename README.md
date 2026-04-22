@@ -1,78 +1,63 @@
 # HardSecNet PySide
 
-HardSecNet is a local-first cross-platform hardening studio and fleet prototype for Windows and Linux.
+HardSecNet PySide is a local-first CIS hardening studio for Windows and Linux. It keeps the project focused on one operator machine: import or use CIS benchmark controls, map them to reviewable scripts, run local audit/hardening flows, compare drift, explain risk with local AI, and export evidence-backed reports.
 
-This repo currently contains four product surfaces:
-
-- a `PySide6` desktop operator app
-- a `FastAPI` control plane
-- a Python device agent
-- a `React + Vite` fleet dashboard
-
-It also contains a CIS benchmark ingestion pipeline that can extract controls from benchmark source files, normalize them into structured records, and generate reviewable script candidates.
+Fleet control is not part of this project scope. There is no parent admin PC, child PC agent, control plane, remote job queue, or web fleet dashboard in this repo.
 
 ## What This Repo Is For
 
-HardSecNet is trying to solve a specific problem:
+HardSecNet PySide solves the local hardening workflow:
 
-- import hardening benchmarks like CIS
-- convert them into structured controls
-- map those controls to local checks and remediation steps
-- run audits and hardening workflows on Windows and Linux
-- store evidence and reports
-- eventually coordinate those workflows across multiple devices
+- import CIS benchmark sources and normalize controls
+- maintain benchmark-to-script traceability
+- run local benchmark-aware profiles for Windows and Linux
+- capture before/after drift and explain its effect
+- produce local JSON, HTML, and PDF reports
+- keep AI explanation local-first through the Ollama-oriented settings path
 
-This matters because most security hardening tools are either:
-
-- benchmark viewers with weak execution
-- execution tools with weak traceability
-- enterprise products that are difficult to adapt locally
-
-HardSecNet is trying to keep benchmark traceability, execution flexibility, and local control in one place.
+The exported scripts are reviewable candidates, not blind production remediations. Operators should approve and validate commands before applying them to live machines.
 
 ## Current Status
 
 What works today:
 
-- desktop app shell and local reporting flow
-- control plane API with auth, devices, jobs, campaigns, and reports
-- device agent polling flow
-- web dashboard build and API integration
-- CIS benchmark extraction from the provided Windows and Ubuntu PDFs
-- durable benchmark export into the repo as JSON + script candidate bundles
+- polished local Dashboard page for current-device posture
+- PySide6 desktop app shell
+- local benchmark import and durable benchmark exports
+- script readiness review with risk, command preview, and dry-run artifacts
+- curated ready script examples for local baseline validation
+- local run/report flow with findings and comparison deltas
+- local AI task records with deterministic fallback and optional Ollama-backed risk/report explanations
+- Windows and Ubuntu CIS benchmark bundles stored in the repo
 
 What is still incomplete:
 
-- many generated Windows scripts are still review templates, not fully validated runnable remediations
-- Ubuntu script candidates are stronger, but still need systematic validation before production use
-- dashboard UX is basic
-- production deployment and packaging are not fully hardened yet
+- many Windows generated scripts remain policy templates that need validation
+- Ubuntu shell candidates still need systematic production validation
+- Ollama-backed live model calls require a running local Ollama server and `HARDSECNET_OLLAMA_LIVE=1`
+- packaging and installer hardening are not complete
 
-## Monorepo Layout
+## Layout
 
 - `src/hardsecnet_pyside/`
-  - desktop app, local benchmark/reporting flow, controller/service logic
-- `services/control_plane/`
-  - FastAPI backend, persistence models, auth, fleet APIs
-- `services/device_agent/`
-  - polling endpoint agent that talks to the control plane
-- `shared/contracts/`
-  - shared API/data contracts used across processes
-- `web/dashboard/`
-  - React fleet dashboard
+  - PySide app, controller/service logic, benchmark import, reports, AI explanation scaffolding
 - `src/hardsecnet_pyside/data/benchmark_exports/`
-  - extracted benchmark bundles that no longer depend on the original PDFs at runtime
+  - extracted CIS benchmark bundles and generated script candidates
+- `runtime/`
+  - local generated artifacts, imports, reports, scripts, and SQLite state
 - `docs/`
-  - implementation notes, validation, architecture, onboarding, and benchmark docs
+  - BMAD artifacts, architecture, validation notes, onboarding, and benchmark docs
+- `original_docs/`
+  - source planning/reference documents retained for project provenance
 
 ## New User Quick Start
 
-If you are new to the project, read these in order:
+Read these in order:
 
 1. [First Run Guide](/E:/T/hardsecnet/hardsecnet-pyside/docs/FIRST_RUN.md)
 2. [Architecture Guide](/E:/T/hardsecnet/hardsecnet-pyside/docs/ARCHITECTURE_GUIDE.md)
 3. [CIS Benchmark Engine](/E:/T/hardsecnet/hardsecnet-pyside/docs/CIS_BENCHMARK_ENGINE.md)
-4. [Validation Summary](/E:/T/hardsecnet/hardsecnet-pyside/docs/validation_full_platform.md)
+4. [Validation Summary](/E:/T/hardsecnet/hardsecnet-pyside/docs/validation.md)
 
 ## Environment
 
@@ -80,13 +65,8 @@ Expected developer environment:
 
 - Windows with PowerShell
 - Python 3.12+
-- Node.js 18+
-- npm
-
-Optional but useful:
-
-- PyMuPDF installed through project dependencies for PDF parsing
-- a local AI runtime if you want to extend the AI features
+- PyMuPDF through project dependencies for PDF parsing
+- optional local Ollama runtime for future live local-AI explanation work
 
 ## Setup
 
@@ -97,16 +77,7 @@ python -m venv .venv
 pip install -e .[dev]
 ```
 
-Dashboard dependencies:
-
-```powershell
-cd E:\T\hardsecnet\hardsecnet-pyside\web\dashboard
-npm install
-```
-
-## Run The Surfaces
-
-### 1. Desktop App
+## Run The Desktop App
 
 ```powershell
 cd E:\T\hardsecnet\hardsecnet-pyside
@@ -114,85 +85,38 @@ cd E:\T\hardsecnet\hardsecnet-pyside
 hardsecnet-pyside
 ```
 
-What it does:
+The app provides:
 
-- local benchmark import
-- local run/report flow
-- benchmark-aware operator UI
-- backend-aware fleet integration when the control plane is configured
+- current-device dashboard metrics
+- local CIS benchmark browsing/import
+- generated script readiness and guarded dry runs
+- curated ready-script examples for built-in benchmark controls
+- local profile execution
+- current-device dashboard flow
+- before/after drift comparison
+- AI Advisor records for risk and remediation explanation
+- local report export
 
-### 2. Control Plane
-
-```powershell
-cd E:\T\hardsecnet\hardsecnet-pyside
-.\.venv\Scripts\Activate.ps1
-$env:HARDSECNET_CP_DATABASE_URL = "sqlite:///./runtime/control_plane.db"
-$env:HARDSECNET_CP_ARTIFACTS_DIR = ".\\runtime\\control_plane_artifacts"
-.\.venv\Scripts\python.exe -m uvicorn services.control_plane.app.main:app --reload
-```
-
-Default local API:
-
-- `http://127.0.0.1:8000`
-- OpenAPI docs at `http://127.0.0.1:8000/docs`
-
-### 3. Device Agent
+Optional live local AI:
 
 ```powershell
-cd E:\T\hardsecnet\hardsecnet-pyside
-.\.venv\Scripts\Activate.ps1
-$env:HARDSECNET_AGENT_URL = "http://127.0.0.1:8000"
-$env:HARDSECNET_AGENT_DEVICE_ID = "agent-01"
-$env:HARDSECNET_AGENT_DEVICE_NAME = "Agent 01"
-$env:HARDSECNET_AGENT_OS = "windows"
-.\.venv\Scripts\python.exe -m services.device_agent.hardsecnet_device_agent.main
+$env:HARDSECNET_OLLAMA_LIVE = "1"
+$env:HARDSECNET_LOCAL_MODEL = "phi3"
+hardsecnet-pyside
 ```
 
-The agent will:
-
-- bootstrap/login to the control plane
-- enroll if needed
-- send heartbeats
-- poll approved jobs
-- run adapter-backed work
-- upload results
-
-### 4. Dashboard
-
-```powershell
-cd E:\T\hardsecnet\hardsecnet-pyside\web\dashboard
-npm run dev
-```
-
-By default the dashboard expects:
-
-- API base: `http://127.0.0.1:8000/api/v1`
-
-You can override it with:
-
-```powershell
-$env:VITE_HARDSECNET_API = "http://127.0.0.1:8000/api/v1"
-```
+When Ollama is unavailable or disabled, the app falls back to deterministic local explanations.
 
 ## Verification
-
-Python tests:
 
 ```powershell
 cd E:\T\hardsecnet\hardsecnet-pyside
 .\.venv\Scripts\python.exe -m pytest -q tests
 ```
 
-Dashboard production build:
-
-```powershell
-cd E:\T\hardsecnet\hardsecnet-pyside\web\dashboard
-npm run build
-```
-
 ## Benchmark Exports
 
-The extracted CIS benchmark bundles now live in the repo:
+The extracted CIS benchmark bundles live in the repo:
 
 - [Windows 11 CIS Export](/E:/T/hardsecnet/hardsecnet-pyside/src/hardsecnet_pyside/data/benchmark_exports/cis-microsoft-windows-11-stand-alone-benchmark-v4.0.0)
 - [Ubuntu 24.04 CIS Export](/E:/T/hardsecnet/hardsecnet-pyside/src/hardsecnet_pyside/data/benchmark_exports/cis-ubuntu-linux-24.04-lts-benchmark-v1.0.0)
@@ -204,29 +128,22 @@ Each bundle contains:
 - `scripts/`
 - `README.md`
 
-These are durable project artifacts. The application no longer needs the original PDFs at runtime for these two imported benchmark sets.
+The desktop app no longer needs the original PDFs at runtime for these two imported benchmark sets.
 
-## Important Caveat
+## Caveat
 
-The exported scripts are not all production-safe remediations yet.
-
-That distinction matters.
-
-Many Ubuntu controls extracted into shell-oriented steps fairly well.
-Many Windows controls extracted into reviewable policy templates rather than directly runnable PowerShell.
-
-Treat the generated scripts as:
+Treat generated scripts as:
 
 - benchmark-derived candidates
 - traceable starting points
 - review-required implementation inputs
 
-Not as “blindly run all of them on a live machine”.
+Do not run every generated script on a live machine without review.
 
 ## Supporting Docs
 
 - [First Run Guide](/E:/T/hardsecnet/hardsecnet-pyside/docs/FIRST_RUN.md)
 - [Architecture Guide](/E:/T/hardsecnet/hardsecnet-pyside/docs/ARCHITECTURE_GUIDE.md)
 - [CIS Benchmark Engine](/E:/T/hardsecnet/hardsecnet-pyside/docs/CIS_BENCHMARK_ENGINE.md)
-- [Implementation Proof](/E:/T/hardsecnet/hardsecnet-pyside/docs/implementation_proof_full_platform.md)
-- [Validation](/E:/T/hardsecnet/hardsecnet-pyside/docs/validation_full_platform.md)
+- [Implementation Proof](/E:/T/hardsecnet/hardsecnet-pyside/docs/implementation_proof.md)
+- [Validation](/E:/T/hardsecnet/hardsecnet-pyside/docs/validation.md)

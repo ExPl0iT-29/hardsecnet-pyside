@@ -54,39 +54,22 @@ class AppPaths:
 
 @dataclass(slots=True)
 class AISettings:
-    mode: str = "hybrid"
+    mode: str = "local"
     local_provider: str = "ollama"
     local_endpoint: str = "http://127.0.0.1:11434/api/generate"
     local_model: str = "phi3"
-    cloud_endpoint: str = ""
-    cloud_api_key: str = ""
-    cloud_model: str = ""
+    live_enabled: bool = False
+    request_timeout_seconds: float = 4.0
 
     @classmethod
     def from_env(cls) -> "AISettings":
         return cls(
-            mode=os.getenv("HARDSECNET_AI_MODE", "hybrid"),
+            mode=os.getenv("HARDSECNET_AI_MODE", "local"),
             local_provider=os.getenv("HARDSECNET_LOCAL_PROVIDER", "ollama"),
             local_endpoint=os.getenv(
                 "HARDSECNET_LOCAL_ENDPOINT", "http://127.0.0.1:11434/api/generate"
             ),
             local_model=os.getenv("HARDSECNET_LOCAL_MODEL", "phi3"),
-            cloud_endpoint=os.getenv("HARDSECNET_CLOUD_ENDPOINT", ""),
-            cloud_api_key=os.getenv("HARDSECNET_CLOUD_API_KEY", ""),
-            cloud_model=os.getenv("HARDSECNET_CLOUD_MODEL", ""),
-        )
-
-
-@dataclass(slots=True)
-class ControlPlaneSettings:
-    base_url: str = ""
-    username: str = "admin"
-    password: str = "admin"
-
-    @classmethod
-    def from_env(cls) -> "ControlPlaneSettings":
-        return cls(
-            base_url=os.getenv("HARDSECNET_CONTROL_PLANE_URL", "").rstrip("/"),
-            username=os.getenv("HARDSECNET_CONTROL_PLANE_USER", "admin"),
-            password=os.getenv("HARDSECNET_CONTROL_PLANE_PASSWORD", "admin"),
+            live_enabled=os.getenv("HARDSECNET_OLLAMA_LIVE", os.getenv("HARDSECNET_AI_LIVE", "0")) == "1",
+            request_timeout_seconds=float(os.getenv("HARDSECNET_AI_TIMEOUT_SECONDS", "4")),
         )

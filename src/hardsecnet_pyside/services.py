@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
+import subprocess
 import uuid
 from dataclasses import asdict, dataclass
 from importlib import resources
@@ -13,24 +15,19 @@ from hardsecnet_pyside.benchmark import BenchmarkImporter
 from hardsecnet_pyside.config import AISettings, AppPaths
 from hardsecnet_pyside.models import (
     AgentRecommendation,
-    AgentHeartbeat,
-    AgentManifest,
     ApprovalRecord,
     BenchmarkDocument,
     BenchmarkItem,
     ComparisonDelta,
-    ComparisonCampaign,
     ComplianceFinding,
     DeviceRecord,
-    FleetSnapshot,
     ModuleDefinition,
-    JobRequest,
-    JobResultEnvelope,
     NetworkCheck,
     ProfileTemplate,
     ReportBundle,
     RunRecord,
-    RunSyncEnvelope,
+    ScriptExecutionRecord,
+    ScriptReadiness,
     StepResult,
     ModuleResult,
     utc_now,
@@ -71,13 +68,45 @@ class DashboardSnapshot:
     module_catalog: list[ModuleDefinition]
 
 
-@dataclass(slots=True)
-class FleetSummary:
-    snapshot: FleetSnapshot
-    latest_heartbeat_by_device: dict[str, AgentHeartbeat]
-    pending_jobs: list[JobRequest]
-    active_jobs: list[JobRequest]
-    completed_jobs: list[JobRequest]
+SCRIPT_REVIEW_MARKERS = (
+    "todo",
+    "manual review required",
+    "convert the remediation",
+    "<approved",
+    "review_required",
+    "replace the commented",
+)
+HIGH_RISK_SCRIPT_MARKERS = (
+    "remove-item",
+    "rm -rf",
+    "set-executionpolicy",
+    "format-volume",
+    "reg delete",
+    "del /f",
+    "userdel",
+    "net user /delete",
+    "netsh advfirewall set allprofiles state off",
+    "shutdown",
+    "restart-computer",
+)
+MEDIUM_RISK_SCRIPT_MARKERS = (
+    "set-itemproperty",
+    "new-itemproperty",
+    "net accounts",
+    "secedit",
+    "auditpol",
+    "modprobe",
+    "rmmod",
+    "systemctl",
+    "sysctl",
+    "chmod",
+    "chown",
+)
+SCRIPT_SCAFFOLD_LINES = {
+    "$erroractionpreference = 'stop'",
+    "set -euo pipefail",
+    "set -e",
+}
 
 
 class HardSecNetService:
@@ -115,6 +144,7 @@ class HardSecNetService:
         )
         service._ensure_default_settings()
         service._ensure_exported_benchmark_bundles()
+        service._ensure_curated_script_candidates()
         return service
 
     def _ensure_default_settings(self) -> None:
@@ -147,6 +177,79 @@ class HardSecNetService:
                 self.repository.set_setting(f"benchmark_bundle_warning.{abs(hash(warning))}", warning)
         self.repository.set_setting("benchmark_bundle_autoload_count", str(loaded_count))
         self.repository.set_setting("benchmark_bundle_refresh_count", str(refreshed_count))
+
+    def _ensure_curated_script_candidates(self) -> None:
+        script_dir = self.paths.generated_scripts_dir / "curated_ready"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        curated_scripts = {
+            "builtin-item-win-lock": (
+                "cis-windows-lock-screen.ps1",
+                """param([switch]$Apply)
+$Path = "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization"
+$Name = "NoLockScreen"
+$Value = 0
+if ($Apply) {
+    if (-not (Test-Path $Path)) {
+        New-Item -Path $Path -Force | Out-Null
+    }
+    Set-ItemProperty -Path $Path -Name $Name -Value $Value
+    Write-Output "Applied lock screen baseline: $Name=$Value"
+} else {
+    Write-Output "Dry run: would ensure $Path has $Name=$Value"
+}
+""",
+            ),
+            "builtin-item-linux-ufw": (
+                "cis-ubuntu-ufw-default-deny.sh",
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${HARDSECNET_APPLY:-0}" = "1" ]; then
+  sudo ufw default deny incoming
+  sudo ufw default allow outgoing
+  sudo ufw --force enable
+  echo "Applied UFW default deny baseline"
+else
+  echo "Dry run: would set UFW incoming deny, outgoing allow, and enable UFW"
+fi
+""",
+            ),
+            "builtin-item-linux-gdm": (
+                "cis-ubuntu-gdm-automount-disable.sh",
+                """#!/usr/bin/env bash
+set -euo pipefail
+TARGET="/etc/dconf/db/local.d/00-media-automount"
+if [ "${HARDSECNET_APPLY:-0}" = "1" ]; then
+  sudo install -d -m 0755 /etc/dconf/db/local.d
+  printf '%s\n' '[org/gnome/desktop/media-handling]' 'automount=false' 'automount-open=false' | sudo tee "$TARGET" >/dev/null
+  sudo dconf update
+  echo "Applied GDM automount disable baseline"
+else
+  echo "Dry run: would write $TARGET and run dconf update"
+fi
+""",
+            ),
+        }
+
+        items = self.repository.list_benchmark_items()
+        updated: list[BenchmarkItem] = []
+        for item in items:
+            candidate = curated_scripts.get(item.id)
+            if candidate is None:
+                continue
+            filename, content = candidate
+            script_path = script_dir / filename
+            if not script_path.exists() or script_path.read_text(encoding="utf-8") != content:
+                script_path.write_text(content, encoding="utf-8")
+            item.script_path = str(script_path)
+            item.script_state = "ready"
+            note = "Curated ready script candidate bundled for local-only validation and approval-gated execution."
+            item.review_notes = [entry for entry in item.review_notes if "Curated ready script candidate" not in entry]
+            item.review_notes.append(note)
+            updated.append(item)
+
+        if updated:
+            self.repository.save_benchmark_items(updated)
+            self.repository.set_setting("curated_ready_script_count", str(len(updated)))
 
     def _load_module_catalog(self) -> list[ModuleDefinition]:
         payload = json.loads(
@@ -202,6 +305,127 @@ class HardSecNetService:
     ) -> list[BenchmarkItem]:
         return self.list_benchmark_items(document_id=document_id, os_family=os_family)
 
+    def list_script_readiness(
+        self, document_id: str | None = None, os_family: str | None = None
+    ) -> list[ScriptReadiness]:
+        return [
+            self.classify_script_item(item)
+            for item in self.list_benchmark_items(document_id=document_id, os_family=os_family)
+        ]
+
+    def list_script_executions(self, item_id: str | None = None) -> list[ScriptExecutionRecord]:
+        executions = self.repository.list_script_executions(item_id=item_id)
+        return sorted(executions, key=lambda item: (item.created_at, item.id), reverse=True)
+
+    def classify_script_item(self, item: BenchmarkItem) -> ScriptReadiness:
+        script_path = self._resolve_script_path(item)
+        if script_path is None:
+            return ScriptReadiness(
+                item_id=item.id,
+                document_id=item.document_id,
+                benchmark_id=item.benchmark_id,
+                title=item.title,
+                os_family=item.os_family,
+                script_path=item.script_path,
+                status="missing",
+                reason="No generated script candidate is available for this benchmark control.",
+                risk_level="unknown",
+                rollback_notes=list(item.rollback_notes),
+                review_notes=list(item.review_notes),
+            )
+
+        content = script_path.read_text(encoding="utf-8", errors="replace")
+        lowered = content.lower()
+        commands = self._script_command_preview(content)
+        risk_level = self._script_risk_level(lowered)
+        review_reasons = [marker for marker in SCRIPT_REVIEW_MARKERS if marker in lowered]
+        if review_reasons:
+            status = "review_required"
+            reason = f"Script contains review marker: {review_reasons[0]}."
+        elif not commands:
+            status = "review_required"
+            reason = "Script has no actionable command lines beyond comments or scaffolding."
+        else:
+            status = "ready"
+            reason = "Script candidate has actionable commands and no review marker."
+
+        if risk_level == "high" and status == "ready":
+            status = "review_required"
+            reason = "High-risk command pattern requires operator review before execution."
+
+        return ScriptReadiness(
+            item_id=item.id,
+            document_id=item.document_id,
+            benchmark_id=item.benchmark_id,
+            title=item.title,
+            os_family=item.os_family,
+            script_path=str(script_path),
+            status=status,
+            reason=reason,
+            risk_level=risk_level,
+            commands_preview=commands,
+            rollback_notes=list(item.rollback_notes),
+            review_notes=list(item.review_notes),
+        )
+
+    def run_script_dry_run(
+        self,
+        item_id: str,
+        *,
+        operator: str | None = None,
+        execute: bool = False,
+    ) -> ScriptExecutionRecord:
+        item = self._get_benchmark_item(item_id)
+        readiness = self.classify_script_item(item)
+        allow_execute = os.getenv("HARDSECNET_ALLOW_SCRIPT_EXECUTION") == "1"
+        mode = "execute" if execute else "dry_run"
+        command = self._script_execution_command(item, readiness)
+        execution_id = f"script-{uuid.uuid4().hex[:12]}"
+        execution = ScriptExecutionRecord(
+            id=execution_id,
+            benchmark_item_id=item.id,
+            benchmark_id=item.benchmark_id,
+            document_id=item.document_id,
+            mode=mode,
+            status="blocked",
+            command=command,
+            operator=operator or self.repository.get_setting("operator_name", "operator"),
+            allow_execute=allow_execute,
+            readiness_status=readiness.status,
+            risk_level=readiness.risk_level,
+        )
+
+        if readiness.status == "missing":
+            execution.error = readiness.reason
+        elif execute and not allow_execute:
+            execution.error = "Live script execution is disabled. Set HARDSECNET_ALLOW_SCRIPT_EXECUTION=1 to enable it."
+        elif execute and readiness.status != "ready":
+            execution.error = f"Script execution blocked because readiness is {readiness.status}."
+        elif execute:
+            execution.status, execution.output, execution.error = self._execute_script_command(command)
+        else:
+            execution.status = "dry_run_recorded"
+            execution.output = (
+                "Dry run recorded. No system changes were made. "
+                f"Readiness={readiness.status}; risk={readiness.risk_level}."
+            )
+
+        execution.completed_at = utc_now()
+        artifact_path = self._write_script_execution_artifact(execution, readiness)
+        execution.artifact_path = str(artifact_path)
+        artifact_path.write_text(
+            to_json(
+                {
+                    "execution": asdict(execution),
+                    "readiness": asdict(readiness),
+                    "recorded_at": utc_now(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.repository.save_script_execution(execution)
+        return execution
+
     def list_runs(self, device_id: str | None = None) -> list[RunRecord]:
         runs = self.repository.list_runs(device_id=device_id)
         return sorted(runs, key=lambda item: (item.started_at, item.id), reverse=True)
@@ -239,224 +463,6 @@ class HardSecNetService:
             ],
             ai_tasks_count=len(self.list_ai_tasks()),
             module_catalog=self.list_modules(device.os_family),
-        )
-
-    def enroll_device(
-        self,
-        *,
-        device_id: str,
-        name: str,
-        os_family: str,
-        hostname: str,
-        agent_version: str = "0.1.0",
-        agent_mode: str = "fleet",
-        capabilities: list[str] | None = None,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> DeviceRecord:
-        normalized_os = os_family.lower().strip()
-        if not device_id:
-            raise ValueError("device_id is required")
-        if normalized_os not in {"windows", "linux"}:
-            raise ValueError(f"Unsupported os_family: {os_family}")
-        device = DeviceRecord(
-            id=device_id,
-            name=name,
-            os_family=normalized_os,
-            hostname=hostname,
-            agent_mode=agent_mode,
-            tags=tags or [],
-            metadata=metadata or {},
-        )
-        self.repository.save_device(device)
-        self.repository.save_agent_manifest(
-            AgentManifest(
-                device_id=device.id,
-                agent_version=agent_version,
-                capabilities=capabilities or ["audit", "heartbeat", "job-execution"],
-            )
-        )
-        return device
-
-    def list_agent_manifests(self) -> list[AgentManifest]:
-        return sorted(self.repository.list_agent_manifests(), key=lambda item: item.device_id)
-
-    def get_agent_manifest(self, device_id: str) -> AgentManifest | None:
-        return self.repository.get_agent_manifest(device_id)
-
-    def record_heartbeat(
-        self,
-        *,
-        device_id: str,
-        status: str,
-        queued_jobs: int,
-        details: dict[str, Any] | None = None,
-    ) -> AgentHeartbeat:
-        device = self.repository.get_device(device_id)
-        if device is None:
-            raise ValueError(f"Unknown device: {device_id}")
-        heartbeat = AgentHeartbeat(
-            id=f"heartbeat-{uuid.uuid4().hex[:12]}",
-            device_id=device_id,
-            status=status,
-            queued_jobs=queued_jobs,
-            details=details or {},
-        )
-        self.repository.save_agent_heartbeat(heartbeat)
-        device.last_seen = heartbeat.observed_at
-        self.repository.save_device(device)
-        return heartbeat
-
-    def list_heartbeats(self, device_id: str | None = None) -> list[AgentHeartbeat]:
-        heartbeats = self.repository.list_agent_heartbeats(device_id=device_id)
-        return sorted(heartbeats, key=lambda item: (item.observed_at, item.id), reverse=True)
-
-    def queue_job(
-        self,
-        *,
-        device_id: str,
-        action: str,
-        payload: dict[str, Any],
-        approval_required: bool = True,
-        approval_state: str = "approved",
-    ) -> JobRequest:
-        if self.repository.get_device(device_id) is None:
-            raise ValueError(f"Unknown device: {device_id}")
-        job = JobRequest(
-            id=f"job-{uuid.uuid4().hex[:12]}",
-            device_id=device_id,
-            action=action,
-            payload=payload,
-            approval_required=approval_required,
-            approval_state=approval_state,
-            status="queued",
-        )
-        self.repository.save_job(job)
-        return job
-
-    def list_jobs(self, device_id: str | None = None, status: str | None = None) -> list[JobRequest]:
-        jobs = self.repository.list_jobs(device_id=device_id, status=status)
-        return sorted(jobs, key=lambda item: (item.created_at, item.id), reverse=True)
-
-    def claim_job(
-        self,
-        job_id: str,
-        *,
-        device_id: str,
-        claimed_by: str = "",
-    ) -> JobRequest | None:
-        job = self.repository.get_job(job_id)
-        if job is None:
-            raise ValueError(f"Unknown job: {job_id}")
-        if job.device_id != device_id:
-            return None
-        if job.status not in {"queued", "pending"}:
-            return None
-        if job.approval_required and job.approval_state != "approved":
-            return None
-        job.status = "in_progress"
-        job.claimed_at = utc_now()
-        job.assigned_to = claimed_by or device_id
-        job.updated_at = utc_now()
-        self.repository.save_job(job)
-        return job
-
-    def complete_job(
-        self,
-        job_id: str,
-        *,
-        device_id: str,
-        status: str = "completed",
-        summary: str = "",
-        artifacts: list[str] | None = None,
-        details: dict[str, Any] | None = None,
-        run_id: str = "",
-    ) -> JobResultEnvelope:
-        job = self.repository.get_job(job_id)
-        if job is None:
-            raise ValueError(f"Unknown job: {job_id}")
-        if job.device_id != device_id:
-            raise ValueError(f"Job {job_id} does not belong to device {device_id}")
-        job.status = status
-        job.completed_at = utc_now()
-        job.updated_at = job.completed_at
-        job.result_summary = summary
-        job.artifact_paths = list(artifacts or [])
-        job.error = "" if status == "completed" else (details or {}).get("error", "")
-        self.repository.save_job(job)
-        result = JobResultEnvelope(
-            id=f"jobresult-{uuid.uuid4().hex[:12]}",
-            job_id=job.id,
-            device_id=device_id,
-            status=status,
-            summary=summary,
-            artifacts=list(artifacts or []),
-            run_id=run_id,
-            details=details or {},
-        )
-        self.repository.save_job_result(result)
-        return result
-
-    def list_job_results(
-        self, device_id: str | None = None, job_id: str | None = None
-    ) -> list[JobResultEnvelope]:
-        results = self.repository.list_job_results(device_id=device_id, job_id=job_id)
-        return sorted(results, key=lambda item: (item.reported_at, item.id), reverse=True)
-
-    def list_campaigns(self) -> list[ComparisonCampaign]:
-        return sorted(self.repository.list_campaigns(), key=lambda item: (item.created_at, item.id), reverse=True)
-
-    def create_campaign(
-        self, name: str, device_ids: list[str], benchmark_scope: list[str]
-    ) -> ComparisonCampaign:
-        campaign = ComparisonCampaign(
-            id=f"campaign-{uuid.uuid4().hex[:12]}",
-            name=name,
-            device_ids=device_ids,
-            benchmark_scope=benchmark_scope,
-        )
-        self.repository.save_campaign(campaign)
-        return campaign
-
-    def get_fleet_snapshot(self) -> FleetSnapshot:
-        devices = sorted(self.repository.list_devices(), key=lambda item: (item.hostname, item.id))
-        manifests = self.list_agent_manifests()
-        heartbeats = self.list_heartbeats()
-        jobs = self.list_jobs()
-        results = self.list_job_results()
-        campaigns = self.list_campaigns()
-        return FleetSnapshot(
-            devices=devices,
-            manifests=manifests,
-            heartbeats=heartbeats,
-            jobs=jobs,
-            job_results=results,
-            campaigns=campaigns,
-            device_count=len(devices),
-            online_device_count=sum(
-                1 for heartbeat in heartbeats if heartbeat.status.lower() in {"online", "healthy", "ready"}
-            ),
-            queued_job_count=sum(1 for job in jobs if job.status == "queued"),
-            in_progress_job_count=sum(1 for job in jobs if job.status == "in_progress"),
-            completed_job_count=sum(1 for job in jobs if job.status == "completed"),
-        )
-
-    def get_fleet_summary(self) -> FleetSummary:
-        snapshot = self.get_fleet_snapshot()
-        latest_heartbeat_by_device: dict[str, AgentHeartbeat] = {}
-        for heartbeat in snapshot.heartbeats:
-            current = latest_heartbeat_by_device.get(heartbeat.device_id)
-            if current is None or (heartbeat.observed_at, heartbeat.id) > (current.observed_at, current.id):
-                latest_heartbeat_by_device[heartbeat.device_id] = heartbeat
-        pending_jobs = [job for job in snapshot.jobs if job.status == "queued"]
-        active_jobs = [job for job in snapshot.jobs if job.status == "in_progress"]
-        completed_jobs = [job for job in snapshot.jobs if job.status == "completed"]
-        return FleetSummary(
-            snapshot=snapshot,
-            latest_heartbeat_by_device=latest_heartbeat_by_device,
-            pending_jobs=pending_jobs,
-            active_jobs=active_jobs,
-            completed_jobs=completed_jobs,
         )
 
     def import_benchmark(self, import_path: str | Path) -> ImportedBenchmarkResult:
@@ -570,15 +576,6 @@ class HardSecNetService:
             approval_review=approval_review,
             network_checks=self.get_network_checks(run.id),
         )
-
-    def build_sync_envelope(self, run_id: str) -> RunSyncEnvelope:
-        run = self.repository.get_run(run_id)
-        if run is None:
-            raise ValueError(f"Unknown run: {run_id}")
-        findings = self.repository.list_findings(run_id=run.id)
-        comparisons = self.repository.list_comparisons(after_run_id=run.id)
-        reports = [report for report in self.list_reports() if report.run_id == run.id]
-        return RunSyncEnvelope(run=run, findings=findings, comparisons=comparisons, reports=reports)
 
     def get_network_checks(self, run_id: str | None = None) -> list[NetworkCheck]:
         findings = self.repository.list_findings(run_id=run_id) if run_id else []
@@ -850,6 +847,93 @@ class HardSecNetService:
             "ai_mode": self.ai_settings.mode,
             "generated_at": utc_now(),
         }
+
+    def _get_benchmark_item(self, item_id: str) -> BenchmarkItem:
+        for item in self.repository.list_benchmark_items():
+            if item.id == item_id:
+                return item
+        raise ValueError(f"Unknown benchmark item: {item_id}")
+
+    def _resolve_script_path(self, item: BenchmarkItem) -> Path | None:
+        if not item.script_path:
+            return None
+        raw_path = Path(item.script_path)
+        candidates = [raw_path]
+        if not raw_path.is_absolute():
+            candidates.extend(
+                [
+                    self.paths.project_root / raw_path,
+                    self.paths.workspace_root / raw_path,
+                    self.paths.benchmark_exports_dir / raw_path,
+                ]
+            )
+
+        document = self.repository.get_benchmark_document(item.document_id)
+        if document is not None:
+            script_dir = document.provenance.get("export_script_dir") or document.provenance.get("generated_script_dir")
+            if script_dir:
+                candidates.append(Path(str(script_dir)) / raw_path.name)
+
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    def _script_command_preview(self, content: str) -> list[str]:
+        commands: list[str] = []
+        for line in content.splitlines():
+            cleaned = line.strip()
+            lowered = cleaned.lower()
+            if not cleaned or cleaned.startswith("#") or cleaned.startswith("//"):
+                continue
+            if cleaned.startswith("<#") or cleaned.startswith("#>"):
+                continue
+            if lowered.startswith("rem "):
+                continue
+            if lowered in SCRIPT_SCAFFOLD_LINES or cleaned.startswith("#!"):
+                continue
+            commands.append(cleaned)
+            if len(commands) >= 8:
+                break
+        return commands
+
+    def _script_risk_level(self, lowered_content: str) -> str:
+        if any(marker in lowered_content for marker in HIGH_RISK_SCRIPT_MARKERS):
+            return "high"
+        if any(marker in lowered_content for marker in MEDIUM_RISK_SCRIPT_MARKERS):
+            return "medium"
+        return "low"
+
+    def _script_execution_command(self, item: BenchmarkItem, readiness: ScriptReadiness) -> str:
+        if not readiness.script_path:
+            return ""
+        script_path = Path(readiness.script_path)
+        if item.os_family == "windows" or script_path.suffix.lower() == ".ps1":
+            return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{script_path}"'
+        return f'bash "{script_path}"'
+
+    def _execute_script_command(self, command: str) -> tuple[str, str, str]:
+        if not command:
+            return "blocked", "", "No executable command was resolved."
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            shell=True,
+            text=True,
+            timeout=120,
+            cwd=str(self.paths.project_root),
+        )
+        status = "completed" if completed.returncode == 0 else "failed"
+        return status, completed.stdout.strip(), completed.stderr.strip()
+
+    def _write_script_execution_artifact(
+        self,
+        execution: ScriptExecutionRecord,
+        readiness: ScriptReadiness,
+    ) -> Path:
+        artifact_dir = self.paths.artifacts_dir / "script_executions"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        return artifact_dir / f"{execution.id}.json"
 
     def _render_report_html(
         self,

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import urllib.error
+import urllib.request
 from dataclasses import asdict
 from typing import Any
 
@@ -22,6 +25,36 @@ from hardsecnet_pyside.models import (
 class AgentEngine:
     def __init__(self, ai_settings: AISettings) -> None:
         self.ai_settings = ai_settings
+
+    def _generate_text(self, prompt: str, fallback: str) -> tuple[str, str, str]:
+        if not self.ai_settings.live_enabled or self.ai_settings.local_provider != "ollama":
+            return fallback, "deterministic_fallback", ""
+
+        payload = json.dumps(
+            {
+                "model": self.ai_settings.local_model,
+                "prompt": prompt,
+                "stream": False,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.ai_settings.local_endpoint,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(  # nosec B310 - endpoint is a local user-configured Ollama URL.
+                request,
+                timeout=self.ai_settings.request_timeout_seconds,
+            ) as response:
+                raw = response.read().decode("utf-8")
+            generated = str(json.loads(raw).get("response", "")).strip()
+            if generated:
+                return generated, "ollama", ""
+            return fallback, "deterministic_fallback", "Ollama returned an empty response."
+        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            return fallback, "deterministic_fallback", str(exc)
 
     def _task(self, *, agent_type: str, subject_type: str, subject_id: str, result: dict[str, Any]) -> AITaskRecord:
         prompt_hash = hashlib.sha256(
@@ -103,11 +136,41 @@ class AgentEngine:
                     f"{'A benchmark delta was detected.' if any(delta.benchmark_id == finding.benchmark_id for delta in deltas) else 'No benchmark delta detected.'}",
                 )
             )
+        fallback_explanation = (
+            f"Run {run.id} has {sum(1 for item in findings if item.status != 'Compliant')} findings requiring review. "
+            "Prioritize non-compliant and regressed controls, then verify rollback notes before changing the host."
+        )
+        live_explanation, ai_runtime, ai_error = self._generate_text(
+            "\n".join(
+                [
+                    "Explain the security risk in concise operator language.",
+                    f"Run: {run.id}",
+                    "Findings:",
+                    *[
+                        f"- {finding.benchmark_id}: {finding.status}; {finding.title}; expected={finding.expected}; actual={finding.actual}"
+                        for finding in findings[:8]
+                    ],
+                    "Drift:",
+                    *[
+                        f"- {delta.benchmark_id}: {delta.before_status} -> {delta.after_status}"
+                        for delta in deltas[:5]
+                    ],
+                ]
+            ),
+            fallback_explanation,
+        )
+        if recommendations:
+            recommendations[0].explanation = live_explanation
         task = self._task(
             agent_type="Audit Reasoning Agent",
             subject_type="run",
             subject_id=run.id,
-            result={"recommendations": [asdict(item) for item in recommendations]},
+            result={
+                "recommendations": [asdict(item) for item in recommendations],
+                "ai_runtime": ai_runtime,
+                "risk_explanation": live_explanation,
+                "ai_error": ai_error,
+            },
         )
         return task, recommendations
 
@@ -143,15 +206,27 @@ class AgentEngine:
     ) -> tuple[AITaskRecord, str]:
         compliant = sum(1 for finding in findings if finding.status == "Compliant")
         non_compliant = sum(1 for finding in findings if finding.status != "Compliant")
-        summary = (
+        fallback_summary = (
             f"Run {run.id} completed with {compliant} compliant and {non_compliant} non-compliant findings. "
             f"Report '{report.title}' ties benchmark references, evidence, commands, and rollback notes together."
+        )
+        summary, ai_runtime, ai_error = self._generate_text(
+            "\n".join(
+                [
+                    "Write a concise executive summary for this local hardening report.",
+                    f"Run: {run.id}",
+                    f"Compliant findings: {compliant}",
+                    f"Findings requiring review: {non_compliant}",
+                    f"Report title: {report.title}",
+                ]
+            ),
+            fallback_summary,
         )
         task = self._task(
             agent_type="Report Writer Agent",
             subject_type="report",
             subject_id=report.id,
-            result={"summary": summary},
+            result={"summary": summary, "ai_runtime": ai_runtime, "ai_error": ai_error},
         )
         return task, summary
 

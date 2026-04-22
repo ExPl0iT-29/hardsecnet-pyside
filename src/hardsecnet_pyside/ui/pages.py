@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
+
+
+def _section(text: str) -> QtWidgets.QLabel:
+    label = QtWidgets.QLabel(text)
+    label.setObjectName("SectionTitle")
+    return label
 
 
 def _item(value: Any) -> QtWidgets.QTableWidgetItem:
@@ -13,7 +18,18 @@ def _item(value: Any) -> QtWidgets.QTableWidgetItem:
     return cell
 
 
+def _style_table(table: QtWidgets.QTableWidget) -> None:
+    table.setAlternatingRowColors(True)
+    table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+    table.verticalHeader().setVisible(False)
+    table.horizontalHeader().setStretchLastSection(True)
+    table.setShowGrid(False)
+    table.setMinimumHeight(150)
+
+
 def _fill(table: QtWidgets.QTableWidget, headers: list[str], rows: list[list[Any]]) -> None:
+    _style_table(table)
     table.clear()
     table.setColumnCount(len(headers))
     table.setHorizontalHeaderLabels(headers)
@@ -24,6 +40,38 @@ def _fill(table: QtWidgets.QTableWidget, headers: list[str], rows: list[list[Any
     table.resizeColumnsToContents()
 
 
+def _paint_status_column(table: QtWidgets.QTableWidget, column: int) -> None:
+    palette = {
+        "ready": ("#123a2f", "#8ff0bf"),
+        "completed": ("#123a2f", "#8ff0bf"),
+        "compliant": ("#123a2f", "#8ff0bf"),
+        "dry_run_recorded": ("#123a2f", "#8ff0bf"),
+        "review_required": ("#44351a", "#f5d47a"),
+        "needs review": ("#44351a", "#f5d47a"),
+        "review": ("#44351a", "#f5d47a"),
+        "missing": ("#4a2022", "#ff9b9b"),
+        "blocked": ("#4a2022", "#ff9b9b"),
+        "failed": ("#4a2022", "#ff9b9b"),
+        "high": ("#4a2022", "#ff9b9b"),
+        "medium": ("#44351a", "#f5d47a"),
+        "low": ("#123a2f", "#8ff0bf"),
+    }
+    for row in range(table.rowCount()):
+        cell = table.item(row, column)
+        if cell is None:
+            continue
+        key = cell.text().strip().lower()
+        colors = palette.get(key)
+        if colors is None:
+            continue
+        background, foreground = colors
+        cell.setBackground(QtGui.QBrush(QtGui.QColor(background)))
+        cell.setForeground(QtGui.QBrush(QtGui.QColor(foreground)))
+        font = cell.font()
+        font.setBold(True)
+        cell.setFont(font)
+
+
 class BasePage(QtWidgets.QWidget):
     def __init__(self, title: str, subtitle: str = "") -> None:
         super().__init__()
@@ -32,252 +80,151 @@ class BasePage(QtWidgets.QWidget):
         self.subtitle_label = QtWidgets.QLabel(subtitle)
         self.subtitle_label.setObjectName("PageSubtitle")
         self.body = QtWidgets.QVBoxLayout()
-        self.body.setSpacing(12)
+        self.body.setSpacing(14)
         root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
         root.addWidget(self.title_label)
         root.addWidget(self.subtitle_label)
         root.addLayout(self.body)
         root.addStretch(1)
 
 
-class FleetDashboardPage(BasePage):
+class MetricCard(QtWidgets.QFrame):
+    def __init__(self, label: str, accent: str = "cyan") -> None:
+        super().__init__()
+        self.setObjectName("MetricCard")
+        self.setProperty("accent", accent)
+        self.setMinimumSize(150, 96)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(4)
+        self.value = QtWidgets.QLabel("0")
+        self.value.setObjectName("MetricValue")
+        self.label = QtWidgets.QLabel(label)
+        self.label.setObjectName("MetricLabel")
+        self.label.setWordWrap(True)
+        layout.addWidget(self.value)
+        layout.addWidget(self.label)
+
+    def set_value(self, value: Any) -> None:
+        self.value.setText(str(value))
+
+
+class DashboardPage(BasePage):
     def __init__(self, controller, on_refresh: Callable[[], None]) -> None:
-        super().__init__("Fleet", "Track enrolled devices, heartbeats, jobs, and campaigns.")
+        super().__init__(
+            "Dashboard",
+            "Current-device benchmark posture, drift, AI review, and report state.",
+        )
         self.controller = controller
         self.on_refresh = on_refresh
+        self.cards = {
+            "controls": MetricCard("Benchmark controls", "cyan"),
+            "runs": MetricCard("Local runs", "green"),
+            "review": MetricCard("Review items", "amber"),
+            "drift": MetricCard("Drift deltas", "coral"),
+            "ai": MetricCard("AI tasks", "violet"),
+            "reports": MetricCard("Reports", "blue"),
+        }
+        card_grid = QtWidgets.QGridLayout()
+        card_grid.setSpacing(10)
+        for index, card in enumerate(self.cards.values()):
+            card_grid.addWidget(card, index // 3, index % 3)
 
-        self.device_id_edit = QtWidgets.QLineEdit("fleet-demo-01")
-        self.device_name_edit = QtWidgets.QLineEdit("Fleet Demo Device")
-        self.device_host_edit = QtWidgets.QLineEdit("fleet-demo-host")
-        self.device_os_combo = QtWidgets.QComboBox()
-        self.device_os_combo.addItems(["windows", "linux"])
-        self.device_caps_edit = QtWidgets.QLineEdit("audit,compare,report-sync")
-        self.job_action_edit = QtWidgets.QLineEdit("remote-audit")
-        self.job_payload_edit = QtWidgets.QPlainTextEdit()
-        self.job_payload_edit.setPlainText(json.dumps({"campaign": "baseline", "benchmark_scope": []}, indent=2))
-        self.job_summary_edit = QtWidgets.QLineEdit("Remote job completed successfully.")
+        self.device_panel = QtWidgets.QFrame()
+        self.device_panel.setObjectName("Panel")
+        device_layout = QtWidgets.QVBoxLayout(self.device_panel)
+        device_layout.setContentsMargins(14, 12, 14, 12)
+        self.device_label = QtWidgets.QLabel()
+        self.device_label.setObjectName("PanelTitle")
+        self.device_detail = QtWidgets.QLabel()
+        self.device_detail.setObjectName("PanelText")
+        self.device_detail.setWordWrap(True)
+        device_layout.addWidget(self.device_label)
+        device_layout.addWidget(self.device_detail)
 
-        enroll_button = QtWidgets.QPushButton("Enroll Device")
-        enroll_button.clicked.connect(self._enroll_device)
-        heartbeat_button = QtWidgets.QPushButton("Heartbeat Selected")
-        heartbeat_button.clicked.connect(self._record_heartbeat)
-        queue_button = QtWidgets.QPushButton("Queue Job")
-        queue_button.clicked.connect(self._queue_job)
-        claim_button = QtWidgets.QPushButton("Claim Job")
-        claim_button.clicked.connect(self._claim_job)
-        complete_button = QtWidgets.QPushButton("Complete Job")
-        complete_button.clicked.connect(self._complete_job)
-        campaign_button = QtWidgets.QPushButton("Create Campaign")
-        campaign_button.clicked.connect(self._create_campaign)
-        refresh_button = QtWidgets.QPushButton("Refresh")
-        refresh_button.clicked.connect(self.refresh)
+        self.summary = QtWidgets.QTextEdit()
+        self.summary.setReadOnly(True)
+        self.summary.setMinimumHeight(120)
+        self.latest_table = QtWidgets.QTableWidget()
+        self.drift_table = QtWidgets.QTableWidget()
 
-        form = QtWidgets.QFormLayout()
-        form.addRow("Device ID", self.device_id_edit)
-        form.addRow("Device Name", self.device_name_edit)
-        form.addRow("Hostname", self.device_host_edit)
-        form.addRow("OS Family", self.device_os_combo)
-        form.addRow("Capabilities", self.device_caps_edit)
-        form.addRow("Job Action", self.job_action_edit)
-        form.addRow("Job Payload", self.job_payload_edit)
-        form.addRow("Job Summary", self.job_summary_edit)
+        run_button = QtWidgets.QPushButton("Run Local Profile")
+        run_button.clicked.connect(self._run_profile)
+        actions = QtWidgets.QHBoxLayout()
+        actions.addWidget(run_button)
+        actions.addStretch(1)
 
-        button_row = QtWidgets.QHBoxLayout()
-        for button in (enroll_button, heartbeat_button, queue_button, claim_button, complete_button, campaign_button, refresh_button):
-            button_row.addWidget(button)
-
-        self.device_table = QtWidgets.QTableWidget()
-        self.job_table = QtWidgets.QTableWidget()
-        self.result_table = QtWidgets.QTableWidget()
-        self.campaign_table = QtWidgets.QTableWidget()
-        self.details = QtWidgets.QTextEdit()
-        self.details.setReadOnly(True)
-
-        self.device_table.itemSelectionChanged.connect(self._show_details)
-        self.job_table.itemSelectionChanged.connect(self._show_details)
-        self.result_table.itemSelectionChanged.connect(self._show_details)
-
-        self.body.addLayout(form)
-        self.body.addLayout(button_row)
-        self.body.addWidget(QtWidgets.QLabel("Devices"))
-        self.body.addWidget(self.device_table)
-        self.body.addWidget(QtWidgets.QLabel("Jobs"))
-        self.body.addWidget(self.job_table)
-        self.body.addWidget(QtWidgets.QLabel("Results"))
-        self.body.addWidget(self.result_table)
-        self.body.addWidget(QtWidgets.QLabel("Campaigns"))
-        self.body.addWidget(self.campaign_table)
-        self.body.addWidget(self.details)
+        self.body.addLayout(card_grid)
+        self.body.addWidget(self.device_panel)
+        self.body.addLayout(actions)
+        self.body.addWidget(_section("Latest Findings"))
+        self.body.addWidget(self.latest_table)
+        self.body.addWidget(_section("Drift Movement"))
+        self.body.addWidget(self.drift_table)
+        self.body.addWidget(_section("Review Summary"))
+        self.body.addWidget(self.summary)
 
     def refresh(self) -> None:
-        snapshot = self.controller.fleet_snapshot()
+        snapshot = self.controller.dashboard_snapshot()
+        device = snapshot["device"]
+        runs = snapshot["runs"]
+        latest_run = runs[0] if runs else None
+        findings = snapshot["findings"]
+        comparisons = snapshot["comparisons"]
+        review_count = sum(1 for item in findings if item.status != "Compliant")
+
+        self.cards["controls"].set_value(len(snapshot["items"]))
+        self.cards["runs"].set_value(len(runs))
+        self.cards["review"].set_value(review_count)
+        self.cards["drift"].set_value(len(comparisons))
+        self.cards["ai"].set_value(len(snapshot["ai_tasks"]))
+        self.cards["reports"].set_value(len(snapshot["reports"]))
+
+        self.device_label.setText(f"{device.name} | {device.os_family}")
+        self.device_detail.setText(
+            f"{device.hostname} | AI: {self.controller.ai_settings.mode} | "
+            f"{len(snapshot['modules'])} modules | {len(snapshot['profiles'])} local profiles"
+        )
+
         _fill(
-            self.device_table,
-            ["Device ID", "Name", "OS", "Hostname", "Heartbeat", "Queued", "Capabilities"],
+            self.latest_table,
+            ["Benchmark", "Status", "Severity", "Title"],
+            [[item.benchmark_id, item.status, item.severity, item.title] for item in findings[:8]],
+        )
+        _paint_status_column(self.latest_table, 1)
+        _fill(
+            self.drift_table,
+            ["Benchmark", "Delta", "Before", "After"],
             [
-                [
-                    row.device.id,
-                    row.device.name,
-                    row.device.os_family,
-                    row.device.hostname,
-                    row.heartbeat_status,
-                    row.queued_jobs,
-                    ", ".join(row.manifest.capabilities) if row.manifest else "",
-                ]
-                for row in snapshot.devices
+                [delta.benchmark_id, delta.delta_type, delta.before_status, delta.after_status]
+                for delta in comparisons[:8]
             ],
         )
-        _fill(
-            self.job_table,
-            ["Job ID", "Device", "Action", "Status", "Approval", "Claimed", "Completed", "Summary"],
-            [
-                [
-                    row.job.id,
-                    row.job.device_id,
-                    row.job.action,
-                    row.status,
-                    "yes" if row.job.approval_required else "no",
-                    row.claimed_at,
-                    row.completed_at,
-                    row.summary,
-                ]
-                for row in snapshot.jobs
-            ],
-        )
-        _fill(
-            self.result_table,
-            ["Job", "Device", "Status", "Summary", "Artifacts"],
-            [
-                [
-                    result.job_id,
-                    result.device_id,
-                    result.status,
-                    result.summary,
-                    ", ".join(result.artifacts),
-                ]
-                for result in snapshot.results
-            ],
-        )
-        _fill(
-            self.campaign_table,
-            ["Campaign", "Name", "Devices", "Benchmarks", "Created"],
-            [
-                [
-                    campaign.id,
-                    campaign.name,
-                    ", ".join(campaign.device_ids),
-                    ", ".join(campaign.benchmark_scope),
-                    campaign.created_at,
-                ]
-                for campaign in snapshot.campaigns
-            ],
-        )
-        self._show_details()
 
-    def _selected_device_id(self) -> str:
-        selected = self.device_table.selectedItems()
-        if selected:
-            return selected[0].text()
-        if self.device_table.rowCount():
-            return self.device_table.item(0, 0).text()
-        return self.controller.get_current_device().id
-
-    def _selected_job_id(self) -> str | None:
-        selected = self.job_table.selectedItems()
-        if selected:
-            return selected[0].text()
-        if self.job_table.rowCount():
-            return self.job_table.item(0, 0).text()
-        return None
-
-    def _enroll_device(self) -> None:
-        caps = [item.strip() for item in self.device_caps_edit.text().split(",") if item.strip()]
-        self.controller.enroll_fleet_device(
-            device_id=self.device_id_edit.text().strip(),
-            name=self.device_name_edit.text().strip(),
-            os_family=self.device_os_combo.currentText(),
-            hostname=self.device_host_edit.text().strip(),
-            capabilities=caps,
-            metadata={"source": "ui-demo"},
-        )
-        self.controller.record_fleet_heartbeat(self.device_id_edit.text().strip(), "healthy", 0)
-        self.on_refresh()
-
-    def _record_heartbeat(self) -> None:
-        device_id = self._selected_device_id()
-        queued = self.controller.fleet_snapshot().queued_job_count
-        self.controller.record_fleet_heartbeat(device_id, "healthy", queued)
-        self.on_refresh()
-
-    def _queue_job(self) -> None:
-        device_id = self._selected_device_id()
-        try:
-            payload = json.loads(self.job_payload_edit.toPlainText() or "{}")
-        except json.JSONDecodeError:
-            payload = {"raw": self.job_payload_edit.toPlainText()}
-        self.controller.queue_fleet_job(
-            device_id=device_id,
-            action=self.job_action_edit.text().strip() or "remote-audit",
-            payload=payload,
-            approval_required=True,
-        )
-        self.on_refresh()
-
-    def _claim_job(self) -> None:
-        job_id = self._selected_job_id()
-        if not job_id:
-            self.details.setPlainText("No fleet job is available to claim.")
+        if latest_run is None:
+            self.summary.setPlainText("No local run has been recorded yet.")
             return
-        self.controller.claim_fleet_job(job_id)
-        self.on_refresh()
-
-    def _complete_job(self) -> None:
-        job_id = self._selected_job_id()
-        if not job_id:
-            self.details.setPlainText("No fleet job is available to complete.")
-            return
-        self.controller.complete_fleet_job(
-            job_id,
-            summary=self.job_summary_edit.text().strip() or "Remote job completed successfully.",
-            artifacts=[str(self.controller.paths.artifacts_dir / f"{job_id}.json")],
-        )
-        self.on_refresh()
-
-    def _create_campaign(self) -> None:
-        snapshot = self.controller.fleet_snapshot()
-        device_ids = [row.device.id for row in snapshot.devices] or [self.controller.get_current_device().id]
-        self.controller.create_fleet_campaign(
-            name="Fleet Baseline Campaign",
-            device_ids=device_ids,
-            benchmark_scope=["CIS baseline", "fleet compare"],
-        )
-        self.on_refresh()
-
-    def _show_details(self) -> None:
-        snapshot = self.controller.fleet_snapshot()
-        if not snapshot.devices:
-            self.details.setPlainText("No enrolled devices yet.")
-            return
-        device_id = self._selected_device_id()
-        job_id = self._selected_job_id()
-        device = next((row for row in snapshot.devices if row.device.id == device_id), snapshot.devices[0])
-        job = next((row for row in snapshot.jobs if row.job.id == job_id), None)
-        lines = [
-            f"Device: {device.device.name} ({device.device.id})",
-            f"Heartbeat: {device.heartbeat_status}",
-            f"Queued jobs: {device.queued_jobs}",
-        ]
-        if job is not None:
-            lines.extend(
+        report = snapshot["latest_report"]
+        self.summary.setPlainText(
+            "\n".join(
                 [
-                    "",
-                    f"Selected job: {job.job.id}",
-                    f"Action: {job.job.action}",
-                    f"Status: {job.status}",
-                    f"Summary: {job.summary or 'not completed'}",
+                    f"Latest run: {latest_run.id}",
+                    f"Profile: {latest_run.profile_id}",
+                    f"Findings: {len(findings)} total, {review_count} requiring review",
+                    f"Report: {report.title if report else 'not generated'}",
                 ]
             )
-        self.details.setPlainText("\n".join(lines))
+        )
+
+    def _run_profile(self) -> None:
+        device = self.controller.get_current_device()
+        profiles = self.controller.list_profiles(device.os_family) or self.controller.list_profiles()
+        if not profiles:
+            return
+        self.controller.run_profile(profiles[0].id)
+        self.on_refresh()
 
 
 class HardeningPage(BasePage):
@@ -358,6 +305,7 @@ class HardeningPage(BasePage):
             ["Benchmark", "Title", "Status", "Severity", "Confidence"],
             [[item.benchmark_id, item.title, item.status, item.severity, f"{item.confidence:.2f}"] for item in findings],
         )
+        _paint_status_column(self.finding_table, 2)
         self._show_run_details()
 
     def _run_profile(self) -> None:
@@ -550,12 +498,16 @@ class ReportsPage(BasePage):
 
 class BenchmarksPage(BasePage):
     def __init__(self, controller, on_refresh: Callable[[], None]) -> None:
-        super().__init__("Benchmarks", "Inspect seeded benchmark data and import imported controls.")
+        super().__init__("Benchmarks", "Inspect benchmark controls, generated scripts, and guarded dry-run evidence.")
         self.controller = controller
         self.on_refresh = on_refresh
+        self.current_documents: list[Any] = []
+        self.current_items: list[Any] = []
+        self.current_readiness: list[Any] = []
         self.path_edit = QtWidgets.QLineEdit()
         self.documents_table = QtWidgets.QTableWidget()
         self.items_table = QtWidgets.QTableWidget()
+        self.readiness_table = QtWidgets.QTableWidget()
         self.details = QtWidgets.QTextEdit()
         self.details.setReadOnly(True)
 
@@ -563,26 +515,39 @@ class BenchmarksPage(BasePage):
         browse.clicked.connect(self._browse)
         import_button = QtWidgets.QPushButton("Import Benchmark")
         import_button.clicked.connect(self._import)
+        dry_run_button = QtWidgets.QPushButton("Dry Run Selected Script")
+        dry_run_button.clicked.connect(self._dry_run_selected_script)
 
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.path_edit, 1)
         row.addWidget(browse)
         row.addWidget(import_button)
 
+        script_actions = QtWidgets.QHBoxLayout()
+        script_actions.addWidget(dry_run_button)
+        script_actions.addStretch(1)
+
         self.documents_table.itemSelectionChanged.connect(self._show_items)
         self.items_table.itemSelectionChanged.connect(self._show_item_details)
+        self.readiness_table.itemSelectionChanged.connect(self._show_script_details)
         self.body.addLayout(row)
+        self.body.addWidget(_section("Benchmark Documents"))
         self.body.addWidget(self.documents_table)
+        self.body.addWidget(_section("Benchmark Controls"))
         self.body.addWidget(self.items_table)
+        self.body.addWidget(_section("Script Readiness"))
+        self.body.addLayout(script_actions)
+        self.body.addWidget(self.readiness_table)
+        self.body.addWidget(_section("Details"))
         self.body.addWidget(self.details)
 
     def refresh(self) -> None:
         device = self.controller.get_current_device()
-        documents = self.controller.list_benchmark_documents(device.os_family)
+        self.current_documents = self.controller.list_benchmark_documents(device.os_family)
         _fill(
             self.documents_table,
             ["Name", "Version", "OS", "Status", "Source"],
-            [[doc.name, doc.version, doc.os_family, doc.status, doc.source_type] for doc in documents],
+            [[doc.name, doc.version, doc.os_family, doc.status, doc.source_type] for doc in self.current_documents],
         )
         self._show_items()
 
@@ -606,21 +571,40 @@ class BenchmarksPage(BasePage):
 
     def _show_items(self) -> None:
         device = self.controller.get_current_device()
-        docs = self.controller.list_benchmark_documents(device.os_family)
-        if not docs:
+        self.current_documents = self.controller.list_benchmark_documents(device.os_family)
+        if not self.current_documents:
             _fill(self.items_table, ["Benchmark", "Title", "Status", "Confidence"], [])
+            _fill(self.readiness_table, ["Benchmark", "Readiness", "Risk", "Script", "Reason"], [])
             self.details.setPlainText("No benchmark documents are available.")
             return
         row = self.documents_table.currentRow()
-        document = docs[min(max(row, 0), len(docs) - 1)]
-        items = self.controller.list_benchmark_items(document.id)
+        document = self.current_documents[min(max(row, 0), len(self.current_documents) - 1)]
+        self.current_items = self.controller.list_benchmark_items(document.id)
+        self.current_readiness = self.controller.list_script_readiness(document.id)
         _fill(
             self.items_table,
             ["Benchmark", "Title", "Status", "Confidence"],
-            [[item.benchmark_id, item.title, item.status, f"{item.confidence:.2f}"] for item in items],
+            [[item.benchmark_id, item.title, item.status, f"{item.confidence:.2f}"] for item in self.current_items],
         )
+        _fill(
+            self.readiness_table,
+            ["Benchmark", "Readiness", "Risk", "Script", "Reason"],
+            [
+                [
+                    item.benchmark_id,
+                    item.status,
+                    item.risk_level,
+                    Path(item.script_path).name if item.script_path else "",
+                    item.reason,
+                ]
+                for item in self.current_readiness
+            ],
+        )
+        _paint_status_column(self.readiness_table, 1)
+        _paint_status_column(self.readiness_table, 2)
         self.details.setPlainText(
-            f"Document: {document.name}\nVersion: {document.version}\nSource: {document.source_path}\nItems: {len(items)}"
+            f"Document: {document.name}\nVersion: {document.version}\nSource: {document.source_path}\n"
+            f"Items: {len(self.current_items)}\nScripts: {self._script_readiness_summary()}"
         )
 
     def _show_item_details(self) -> None:
@@ -634,6 +618,72 @@ class BenchmarksPage(BasePage):
             f"- Status: {selected[2].text()}\n"
             f"- Confidence: {selected[3].text()}"
         )
+
+    def _show_script_details(self) -> None:
+        readiness = self._selected_readiness()
+        if readiness is None:
+            return
+        executions = self.controller.list_script_executions(readiness.item_id)
+        latest = executions[0] if executions else None
+        self.details.setPlainText(
+            "\n".join(
+                [
+                    f"Benchmark: {readiness.benchmark_id}",
+                    f"Title: {readiness.title}",
+                    f"Readiness: {readiness.status}",
+                    f"Risk: {readiness.risk_level}",
+                    f"Script: {readiness.script_path or 'missing'}",
+                    f"Reason: {readiness.reason}",
+                    f"Commands: {', '.join(readiness.commands_preview) if readiness.commands_preview else 'none'}",
+                    f"Rollback: {', '.join(readiness.rollback_notes) if readiness.rollback_notes else 'review benchmark notes'}",
+                    f"Latest execution: {latest.status if latest else 'none'}",
+                    f"Artifact: {latest.artifact_path if latest else 'none'}",
+                ]
+            )
+        )
+
+    def _dry_run_selected_script(self) -> None:
+        readiness = self._selected_readiness()
+        if readiness is None:
+            row = self.items_table.currentRow()
+            if 0 <= row < len(self.current_items):
+                item = self.current_items[row]
+                matches = [entry for entry in self.current_readiness if entry.item_id == item.id]
+                readiness = matches[0] if matches else None
+        if readiness is None:
+            self.details.setPlainText("Select a benchmark item or script readiness row first.")
+            return
+        execution = self.controller.run_script_dry_run(readiness.item_id)
+        self._show_items()
+        self.details.setPlainText(
+            "\n".join(
+                [
+                    f"Dry run: {execution.id}",
+                    f"Benchmark: {execution.benchmark_id}",
+                    f"Status: {execution.status}",
+                    f"Readiness: {execution.readiness_status}",
+                    f"Risk: {execution.risk_level}",
+                    f"Command: {execution.command or 'none'}",
+                    f"Output: {execution.output or 'none'}",
+                    f"Error: {execution.error or 'none'}",
+                    f"Artifact: {execution.artifact_path}",
+                ]
+            )
+        )
+
+    def _selected_readiness(self):
+        row = self.readiness_table.currentRow()
+        if 0 <= row < len(self.current_readiness):
+            return self.current_readiness[row]
+        return None
+
+    def _script_readiness_summary(self) -> str:
+        if not self.current_readiness:
+            return "none"
+        counts: dict[str, int] = {}
+        for item in self.current_readiness:
+            counts[item.status] = counts.get(item.status, 0) + 1
+        return ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
 
 
 class SettingsPage(BasePage):

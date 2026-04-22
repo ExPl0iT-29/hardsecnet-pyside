@@ -1,1 +1,0 @@
-# HardSecNet device-agent package.

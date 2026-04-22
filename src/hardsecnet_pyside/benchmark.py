@@ -54,11 +54,76 @@ class ParsedControl:
     sections: dict[str, str]
 
 
+@dataclass(slots=True)
+class BenchmarkBundle:
+    path: Path
+    document: BenchmarkDocument
+    items: list[BenchmarkItem]
+    warnings: list[str]
+
+
+@dataclass(slots=True)
+class BenchmarkBundleDiscovery:
+    bundles: list[BenchmarkBundle]
+    warnings: list[str]
+
+
 class BenchmarkImportError(RuntimeError):
     """Raised when benchmark import fails."""
 
 
 class BenchmarkImporter:
+    def discover_exported_bundles(self, export_root: Path) -> BenchmarkBundleDiscovery:
+        warnings: list[str] = []
+        bundles: list[BenchmarkBundle] = []
+        if not export_root.exists():
+            return BenchmarkBundleDiscovery(bundles=bundles, warnings=[f"Benchmark export root not found: {export_root}"])
+        for bundle_dir in sorted(path for path in export_root.iterdir() if path.is_dir()):
+            document_path = bundle_dir / "benchmark_document.json"
+            items_path = bundle_dir / "benchmark_items.json"
+            if not document_path.exists() or not items_path.exists():
+                warnings.append(f"Ignored malformed benchmark bundle without required JSON files: {bundle_dir}")
+                continue
+            try:
+                bundles.append(self.load_exported_bundle(bundle_dir))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                warnings.append(f"Ignored malformed benchmark bundle {bundle_dir}: {exc}")
+        return BenchmarkBundleDiscovery(bundles=bundles, warnings=warnings)
+
+    def load_exported_bundle(self, bundle_dir: Path) -> BenchmarkBundle:
+        document_path = bundle_dir / "benchmark_document.json"
+        items_path = bundle_dir / "benchmark_items.json"
+        scripts_dir = bundle_dir / "scripts"
+        document_data = json.loads(document_path.read_text(encoding="utf-8"))
+        item_rows = json.loads(items_path.read_text(encoding="utf-8"))
+        document = BenchmarkDocument(**document_data)
+        document.provenance.update(
+            {
+                "autoloaded_from_bundle": True,
+                "export_bundle_dir": str(bundle_dir),
+                "export_document_path": str(document_path),
+                "export_items_path": str(items_path),
+                "export_script_dir": str(scripts_dir),
+            }
+        )
+        items: list[BenchmarkItem] = []
+        warnings: list[str] = []
+        for row in item_rows:
+            item = BenchmarkItem(
+                **{
+                    key: value
+                    for key, value in row.items()
+                    if key not in {"audit_logic", "remediation_steps", "evidence_fields"}
+                },
+                audit_logic=[CheckLogic(**logic) for logic in row.get("audit_logic", [])],
+                remediation_steps=[RemediationStep(**step) for step in row.get("remediation_steps", [])],
+                evidence_fields=[EvidenceField(**field) for field in row.get("evidence_fields", [])],
+            )
+            item.document_id = document.id
+            self._attach_bundle_script_metadata(document, item, scripts_dir, warnings)
+            items.append(item)
+        return BenchmarkBundle(path=bundle_dir, document=document, items=items, warnings=warnings)
+
     def import_path(self, path: Path) -> tuple[BenchmarkDocument, list[BenchmarkItem]]:
         suffix = path.suffix.lower()
         if suffix in {".xml", ".xccdf", ".oval"}:
@@ -76,6 +141,8 @@ class BenchmarkImporter:
         for item in items:
             script_path = output_dir / f"{self._slug(item.benchmark_id)}{extension}"
             script_path.write_text(self._render_script_candidate(document, item), encoding="utf-8")
+            item.script_path = str(script_path)
+            item.script_state = "candidate"
             paths.append(str(script_path))
         return paths
 
@@ -99,6 +166,26 @@ class BenchmarkImporter:
             'script_count': len(generated_paths),
             'readme_path': str(index_path),
         }
+
+    def _attach_bundle_script_metadata(
+        self,
+        document: BenchmarkDocument,
+        item: BenchmarkItem,
+        scripts_dir: Path,
+        warnings: list[str],
+    ) -> None:
+        extension = ".ps1" if document.os_family == "windows" else ".sh"
+        script_path = scripts_dir / f"{self._slug(item.benchmark_id)}{extension}"
+        if script_path.exists():
+            item.script_path = str(script_path)
+            item.script_state = "candidate"
+            return
+        item.script_path = ""
+        item.script_state = "missing"
+        note = f"Generated script candidate is missing from exported bundle for {item.benchmark_id}."
+        if note not in item.review_notes:
+            item.review_notes.append(note)
+        warnings.append(note)
 
     def _document_hash(self, path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()

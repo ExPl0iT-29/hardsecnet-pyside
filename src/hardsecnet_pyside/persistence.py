@@ -205,6 +205,9 @@ TABLE_DEFINITIONS = {
 
 
 def _deserialize_benchmark_item(data: dict[str, Any]) -> BenchmarkItem:
+    data.setdefault("script_path", "")
+    data.setdefault("script_state", "unmapped")
+    data.setdefault("review_notes", [])
     return BenchmarkItem(
         **{key: value for key, value in data.items() if key not in {"audit_logic", "remediation_steps", "evidence_fields"}},
         audit_logic=[CheckLogic(**entry) for entry in data.get("audit_logic", [])],
@@ -348,6 +351,9 @@ class HardSecNetRepository:
 
     def list_benchmark_documents(self) -> list[BenchmarkDocument]:
         return self._list("benchmark_documents", BenchmarkDocument)
+
+    def get_benchmark_document(self, document_id: str) -> BenchmarkDocument | None:
+        return self._get("benchmark_documents", BenchmarkDocument, document_id)
 
     def save_benchmark_items(self, items: list[BenchmarkItem]) -> None:
         for item in items:

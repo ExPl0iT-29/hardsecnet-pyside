@@ -104,6 +104,9 @@ class BenchmarkItem:
     status: str = "review_required"
     tags: list[str] = field(default_factory=list)
     candidate_modules: list[str] = field(default_factory=list)
+    script_path: str = ""
+    script_state: str = "unmapped"
+    review_notes: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 
 from hardsecnet_pyside.benchmark import BenchmarkImporter
-from hardsecnet_pyside.models import BenchmarkDocument
+from hardsecnet_pyside.models import BenchmarkDocument, BenchmarkItem, CheckLogic, EvidenceField, RemediationStep
 from hardsecnet_pyside.services import HardSecNetService
 
 
@@ -99,3 +101,137 @@ def test_import_benchmark_generates_script_candidates(tmp_path: Path) -> None:
     assert export_document_path.exists()
     assert export_script_dir.exists()
     assert any(path.suffix == ".sh" for path in export_script_dir.iterdir())
+
+
+def _write_exported_bundle(
+    export_root: Path,
+    *,
+    document_id: str,
+    os_family: str,
+    benchmark_id: str,
+    with_script: bool = True,
+) -> Path:
+    importer = BenchmarkImporter()
+    bundle_dir = export_root / f"{document_id}-bundle"
+    scripts_dir = bundle_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    document = BenchmarkDocument(
+        id=document_id,
+        name=f"CIS {os_family.title()} Benchmark",
+        version="v-test",
+        os_family=os_family,
+        source_type="pdf-text",
+        source_path="imported.pdf",
+        source_hash=f"{document_id}-hash",
+        status="review_required",
+    )
+    item = BenchmarkItem(
+        id=f"{document_id}-item",
+        document_id=document.id,
+        benchmark_id=benchmark_id,
+        title="Ensure benchmark-native scripts are available",
+        os_family=os_family,
+        automated=True,
+        audit_logic=[
+            CheckLogic(
+                kind="test",
+                target=benchmark_id,
+                operator="review_required",
+                expected="script candidate",
+                notes="test control",
+            )
+        ],
+        remediation_steps=[
+            RemediationStep(
+                title="Apply test control",
+                command="Write-Output test" if os_family == "windows" else "echo test",
+                expected_impact="test",
+                rollback="test",
+            )
+        ],
+        evidence_fields=[EvidenceField(name="test_evidence", description="test")],
+        candidate_modules=["cis_audit"],
+    )
+    (bundle_dir / "benchmark_document.json").write_text(
+        json.dumps(asdict(document), indent=2),
+        encoding="utf-8",
+    )
+    (bundle_dir / "benchmark_items.json").write_text(
+        json.dumps([asdict(item)], indent=2),
+        encoding="utf-8",
+    )
+    if with_script:
+        extension = ".ps1" if os_family == "windows" else ".sh"
+        (scripts_dir / f"{importer._slug(benchmark_id)}{extension}").write_text(
+            "# generated candidate\n",
+            encoding="utf-8",
+        )
+    return bundle_dir
+
+
+def test_discover_exported_bundles_detects_valid_and_ignores_invalid(tmp_path: Path) -> None:
+    export_root = tmp_path / "benchmark_exports"
+    _write_exported_bundle(
+        export_root,
+        document_id="doc-valid-windows",
+        os_family="windows",
+        benchmark_id="1.1.1",
+    )
+    (export_root / "broken-bundle").mkdir(parents=True)
+
+    discovery = BenchmarkImporter().discover_exported_bundles(export_root)
+
+    assert len(discovery.bundles) == 1
+    assert discovery.bundles[0].document.id == "doc-valid-windows"
+    assert discovery.bundles[0].items[0].script_path.endswith("1.1.1.ps1")
+    assert discovery.warnings
+    assert "broken-bundle" in discovery.warnings[0]
+
+
+def test_bootstrap_autoloads_exported_bundles_once(tmp_path: Path) -> None:
+    project_root = tmp_path / "hardsecnet-pyside"
+    export_root = project_root / "src" / "hardsecnet_pyside" / "data" / "benchmark_exports"
+    _write_exported_bundle(
+        export_root,
+        document_id="doc-native-windows",
+        os_family="windows",
+        benchmark_id="1.1.1",
+    )
+    _write_exported_bundle(
+        export_root,
+        document_id="doc-native-ubuntu",
+        os_family="linux",
+        benchmark_id="3.2.1",
+    )
+
+    service = HardSecNetService.bootstrap(project_root=project_root)
+    service = HardSecNetService.bootstrap(project_root=project_root)
+
+    documents = service.list_benchmark_documents()
+    assert len([document for document in documents if document.id == "doc-native-windows"]) == 1
+    assert len([document for document in documents if document.id == "doc-native-ubuntu"]) == 1
+    windows_items = service.list_benchmark_items(document_id="doc-native-windows")
+    ubuntu_items = service.list_benchmark_items(document_id="doc-native-ubuntu")
+    assert windows_items[0].script_path.endswith("1.1.1.ps1")
+    assert windows_items[0].script_state == "candidate"
+    assert ubuntu_items[0].script_path.endswith("3.2.1.sh")
+    assert ubuntu_items[0].script_state == "candidate"
+
+
+def test_exported_bundle_missing_script_becomes_review_issue(tmp_path: Path) -> None:
+    export_root = tmp_path / "benchmark_exports"
+    _write_exported_bundle(
+        export_root,
+        document_id="doc-missing-script",
+        os_family="linux",
+        benchmark_id="4.1.1",
+        with_script=False,
+    )
+
+    discovery = BenchmarkImporter().discover_exported_bundles(export_root)
+
+    item = discovery.bundles[0].items[0]
+    assert item.script_path == ""
+    assert item.script_state == "missing"
+    assert item.review_notes
+    assert discovery.bundles[0].warnings

@@ -114,6 +114,7 @@ class HardSecNetService:
             ai_settings=AISettings.from_env(),
         )
         service._ensure_default_settings()
+        service._ensure_exported_benchmark_bundles()
         return service
 
     def _ensure_default_settings(self) -> None:
@@ -127,6 +128,25 @@ class HardSecNetService:
         for key, value in defaults.items():
             if not self.repository.get_setting(key):
                 self.repository.set_setting(key, value)
+
+    def _ensure_exported_benchmark_bundles(self) -> None:
+        discovery = self.importer.discover_exported_bundles(self.paths.benchmark_exports_dir)
+        for warning in discovery.warnings:
+            self.repository.set_setting(f"benchmark_bundle_warning.{abs(hash(warning))}", warning)
+        loaded_count = 0
+        refreshed_count = 0
+        for bundle in discovery.bundles:
+            existing_document = self.repository.get_benchmark_document(bundle.document.id)
+            self.repository.save_benchmark_document(bundle.document)
+            self.repository.save_benchmark_items(bundle.items)
+            if existing_document is None:
+                loaded_count += 1
+            else:
+                refreshed_count += 1
+            for warning in bundle.warnings:
+                self.repository.set_setting(f"benchmark_bundle_warning.{abs(hash(warning))}", warning)
+        self.repository.set_setting("benchmark_bundle_autoload_count", str(loaded_count))
+        self.repository.set_setting("benchmark_bundle_refresh_count", str(refreshed_count))
 
     def _load_module_catalog(self) -> list[ModuleDefinition]:
         payload = json.loads(

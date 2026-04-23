@@ -227,6 +227,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 border: none;
                 color: white;
                 padding: 10px 14px;
+                min-height: 18px;
                 border-radius: 8px;
                 font-weight: 800;
             }

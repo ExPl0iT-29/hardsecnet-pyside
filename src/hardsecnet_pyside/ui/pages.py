@@ -865,19 +865,48 @@ class BenchmarksPage(BasePage):
         self.items_table.itemSelectionChanged.connect(self._show_item_details)
         self.selection_table.itemSelectionChanged.connect(self._show_selected_item_details)
         self.readiness_table.itemSelectionChanged.connect(self._show_script_details)
+        # Use a main vertical splitter to manage the 4 table sections gracefully
+        main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        main_splitter.setChildrenCollapsible(False)
+
+        # 1. Documents section
+        doc_widget = QtWidgets.QWidget()
+        doc_layout = QtWidgets.QVBoxLayout(doc_widget)
+        doc_layout.setContentsMargins(0, 0, 0, 0)
+        doc_layout.addWidget(_section("Loaded CIS Benchmark Sets"))
+        doc_layout.addWidget(self.documents_table)
+        main_splitter.addWidget(doc_widget)
+
+        # 2. Items section
+        items_widget = QtWidgets.QWidget()
+        items_layout = QtWidgets.QVBoxLayout(items_widget)
+        items_layout.setContentsMargins(0, 0, 0, 0)
+        items_layout.addWidget(_section("CIS Controls In Selected Set"))
+        items_layout.addWidget(self.items_table)
+        items_layout.addLayout(selection_actions)
+        main_splitter.addWidget(items_widget)
+
+        # 3. Selection section
+        selection_widget = QtWidgets.QWidget()
+        selection_layout = QtWidgets.QVBoxLayout(selection_widget)
+        selection_layout.setContentsMargins(0, 0, 0, 0)
+        selection_layout.addWidget(_section("Controls In Profile"))
+        selection_layout.addWidget(self.selection_table)
+        main_splitter.addWidget(selection_widget)
+
+        # 4. Readiness & Details section
+        readiness_widget = QtWidgets.QWidget()
+        readiness_layout = QtWidgets.QVBoxLayout(readiness_widget)
+        readiness_layout.setContentsMargins(0, 0, 0, 0)
+        readiness_layout.addWidget(_section("Profile Builder And Script Readiness"))
+        readiness_layout.addLayout(script_actions)
+        readiness_layout.addWidget(self.readiness_table)
+        readiness_layout.addWidget(_section("Details"))
+        readiness_layout.addWidget(self.details)
+        main_splitter.addWidget(readiness_widget)
+
         self.body.addLayout(row)
-        self.body.addWidget(_section("Loaded CIS Benchmark Sets"))
-        self.body.addWidget(self.documents_table)
-        self.body.addWidget(_section("CIS Controls In Selected Set"))
-        self.body.addWidget(self.items_table)
-        self.body.addLayout(selection_actions)
-        self.body.addWidget(_section("Controls In Profile"))
-        self.body.addWidget(self.selection_table)
-        self.body.addWidget(_section("Profile Builder And Script Readiness"))
-        self.body.addLayout(script_actions)
-        self.body.addWidget(self.readiness_table)
-        self.body.addWidget(_section("Details"))
-        self.body.addWidget(self.details)
+        self.body.addWidget(main_splitter, 1)
 
     def refresh(self) -> None:
         device = self.controller.get_current_device()

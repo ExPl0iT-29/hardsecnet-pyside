@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HardSecNet Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1 class="app-title">HardSecNet</h1>
+                <p class="app-subtitle">Local CIS hardening studio</p>
+            </div>
+            <nav class="navigation">
+                <ul>
+                    <li class="active" data-page="dashboard">Dashboard</li>
+                    <li data-page="run-center">Run Center</li>
+                </ul>
+            </nav>
+            <div class="sidebar-footer">
+                <button id="refresh-btn" class="secondary-btn">Refresh All</button>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <header class="page-header">
+                <h2 id="page-title">Dashboard</h2>
+                <p id="page-subtitle">Current-device hardening posture, open findings, and drift.</p>
+            </header>
+
+            <div class="metrics-grid" id="metrics-container">
+                <!-- Metric cards injected here -->
+            </div>
+
+            <div class="panel" id="device-panel">
+                <h3 id="device-title">Device Info</h3>
+                <p id="device-details">Loading...</p>
+            </div>
+
+            <div class="actions-panel">
+                <select id="profile-select">
+                    <option value="">Loading profiles...</option>
+                </select>
+                <button id="run-btn" class="primary-btn">Run Local Profile</button>
+            </div>
+
+            <section class="data-section">
+                <h3>Priority Findings</h3>
+                <div class="table-responsive">
+                    <table id="findings-table">
+                        <thead>
+                            <tr>
+                                <th>Benchmark</th>
+                                <th>Severity</th>
+                                <th>Status</th>
+                                <th>Title</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Rows injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Required for QWebChannel communication -->
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

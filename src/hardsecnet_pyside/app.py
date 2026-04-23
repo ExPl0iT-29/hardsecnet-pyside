@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
 import sys
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -82,6 +85,27 @@ class HardSecNetController:
     def get_current_device(self) -> DeviceRecord:
         return self.service.get_current_device()
 
+    def list_devices(self) -> list[DeviceRecord]:
+        return self.service.list_devices()
+
+    def add_local_device(
+        self,
+        *,
+        name: str,
+        os_family: str,
+        hostname: str,
+        make_current: bool = True,
+    ) -> DeviceRecord:
+        return self.service.add_local_device(
+            name=name,
+            os_family=os_family,
+            hostname=hostname,
+            make_current=make_current,
+        )
+
+    def set_current_device(self, device_id: str) -> DeviceRecord:
+        return self.service.set_current_device(device_id)
+
     def module_catalog(self, os_family: str | None = None) -> list[ModuleDefinition]:
         return self.service.list_modules(os_family)
 
@@ -90,6 +114,59 @@ class HardSecNetController:
 
     def list_profiles(self, os_family: str | None = None) -> list[ProfileTemplate]:
         return self.service.list_profiles(os_family)
+
+    def save_profile_template(
+        self,
+        *,
+        name: str,
+        os_family: str,
+        benchmark_ids: list[str],
+        strictness: str = "balanced",
+    ) -> ProfileTemplate:
+        modules = [module.id for module in self.list_modules(os_family) if module.default_enabled]
+        profile = ProfileTemplate(
+            id=f"profile-{uuid.uuid4().hex[:12]}",
+            name=name.strip() or f"Custom {os_family.title()} Profile",
+            os_family=os_family,
+            description="Custom profile created from selected CIS benchmark controls.",
+            benchmark_ids=list(dict.fromkeys(benchmark_ids)),
+            module_ids=modules,
+            strictness=strictness,
+            built_in=False,
+            review_required=True,
+        )
+        self.repository.save_profile(profile)
+        return profile
+
+    def ollama_status(self) -> dict[str, Any]:
+        settings = self.ai_settings
+        endpoint = settings.local_endpoint.replace("/api/generate", "/api/tags")
+        configured = os.getenv("HARDSECNET_OLLAMA_LIVE", os.getenv("HARDSECNET_AI_LIVE", "0")) == "1"
+        status: dict[str, Any] = {
+            "configured": configured,
+            "connected": False,
+            "provider": settings.local_provider,
+            "model": settings.local_model,
+            "endpoint": endpoint,
+            "message": "Live Ollama is disabled. Set HARDSECNET_OLLAMA_LIVE=1 before launching.",
+        }
+        if not configured:
+            return status
+        try:
+            request = urllib.request.Request(endpoint, method="GET")
+            with urllib.request.urlopen(request, timeout=1.5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            models = [item.get("name", "") for item in payload.get("models", [])]
+            status["connected"] = True
+            status["models"] = models
+            status["message"] = (
+                f"Connected to Ollama. Model {settings.local_model} is available."
+                if any(settings.local_model in model for model in models)
+                else f"Connected to Ollama, but {settings.local_model} was not listed."
+            )
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            status["message"] = f"Ollama not reachable: {exc}"
+        return status
 
     def list_benchmark_documents(self, os_family: str | None = None) -> list[BenchmarkDocument]:
         return self.service.list_benchmark_documents(os_family)
@@ -115,6 +192,22 @@ class HardSecNetController:
         execute: bool = False,
     ) -> ScriptExecutionRecord:
         return self.service.run_script_dry_run(item_id, operator=operator, execute=execute)
+
+    def rollback_script(
+        self,
+        item_id: str,
+        *,
+        operator: str | None = None,
+    ) -> ScriptExecutionRecord:
+        return self.service.run_script_dry_run(item_id, operator=operator, rollback=True)
+
+    def check_script_status(
+        self,
+        item_id: str,
+        *,
+        operator: str | None = None,
+    ) -> ScriptExecutionRecord:
+        return self.service.run_script_dry_run(item_id, operator=operator, status_check=True)
 
     def list_runs(self, device_id: str | None = None) -> list[RunRecord]:
         return self.service.list_runs(device_id)

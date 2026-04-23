@@ -21,9 +21,11 @@ from hardsecnet_pyside.models import (
     ComparisonDelta,
     ComplianceFinding,
     DeviceRecord,
+    EvidenceField,
     ModuleDefinition,
     NetworkCheck,
     ProfileTemplate,
+    RemediationStep,
     ReportBundle,
     RunRecord,
     ScriptExecutionRecord,
@@ -144,8 +146,137 @@ class HardSecNetService:
         )
         service._ensure_default_settings()
         service._ensure_exported_benchmark_bundles()
+        service._ensure_demo_ready_windows_controls()
         service._ensure_curated_script_candidates()
+        service._ensure_benchmark_profile_templates()
         return service
+
+    def _ensure_demo_ready_windows_controls(self) -> None:
+        document = self.repository.get_benchmark_document("builtin-doc-windows")
+        if document is None:
+            document = BenchmarkDocument(
+                id="builtin-doc-windows",
+                name="Built-in Windows Desktop Baseline",
+                version="1.0",
+                os_family="windows",
+                source_type="curated",
+                source_path="built-in",
+                source_hash="builtin-windows",
+                status="approved",
+                provenance={"origin": "hardsecnet-pyside seed data"},
+            )
+            self.repository.save_benchmark_document(document)
+
+        specs = [
+            (
+                "builtin-item-win-file-ext",
+                "CIS-Windows-Demo-FileExtensions",
+                "Show file extensions",
+                "Visible extensions help users and administrators identify disguised executable files.",
+                "HKCU Explorer Advanced HideFileExt should be 0.",
+                "Set HideFileExt to 0.",
+                "Set HideFileExt back to 1 for demo rollback.",
+                ["attachment-safety", "workstation-hardening", "demo-ready"],
+            ),
+            (
+                "builtin-item-win-autorun",
+                "CIS-Windows-Demo-Autorun",
+                "Disable AutoRun for removable media",
+                "Disabling AutoRun reduces automatic execution risk from removable drives.",
+                "HKCU Explorer policy NoDriveTypeAutoRun should be 255.",
+                "Set NoDriveTypeAutoRun to 255.",
+                "Set NoDriveTypeAutoRun to 145 for demo rollback.",
+                ["removable-media", "workstation-hardening", "demo-ready"],
+            ),
+            (
+                "builtin-item-win-zone-info",
+                "CIS-Windows-Demo-ZoneInformation",
+                "Preserve downloaded-file zone information",
+                "Preserving attachment origin metadata allows Windows to warn about downloaded files.",
+                "HKCU Attachments SaveZoneInformation should be 2.",
+                "Set SaveZoneInformation to 2.",
+                "Set SaveZoneInformation to 1 for demo rollback.",
+                ["attachment-safety", "workstation-hardening", "demo-ready"],
+            ),
+            (
+                "builtin-item-win-screen-active",
+                "CIS-Windows-Demo-ScreenSaverActive",
+                "Enable screen saver after inactivity",
+                "An active screen saver provides an inactivity trigger for session locking.",
+                "HKCU Control Panel Desktop ScreenSaveActive should be 1.",
+                "Set ScreenSaveActive to 1.",
+                "Set ScreenSaveActive back to 0 for demo rollback.",
+                ["session-security", "demo-ready"],
+            ),
+            (
+                "builtin-item-win-screen-timeout",
+                "CIS-Windows-Demo-ScreenSaverTimeout",
+                "Set a short inactivity timeout",
+                "A short timeout reduces the exposure window for an unattended unlocked session.",
+                "HKCU Control Panel Desktop ScreenSaveTimeOut should be 60.",
+                "Set ScreenSaveTimeOut to 60.",
+                "Set ScreenSaveTimeOut to 600 for demo rollback.",
+                ["session-security", "demo-ready"],
+            ),
+            (
+                "builtin-item-win-password-policy",
+                "CIS-Windows-Workstation-PasswordPolicy",
+                "Review local password policy",
+                "Password age, length, and history policy reduce weak or stale local credentials.",
+                "Local password policy should align with the selected CIS account policy controls.",
+                "Review with net accounts; apply through approved administrative policy tooling.",
+                "Rollback through the same administrative policy tooling after approval.",
+                ["password-policy", "workstation-hardening", "admin-review"],
+            ),
+            (
+                "builtin-item-win-firewall-policy",
+                "CIS-Windows-Workstation-FirewallPolicy",
+                "Review Windows Defender Firewall profile policy",
+                "Firewall profiles reduce unsolicited inbound network exposure on workstation devices.",
+                "Domain, private, and public firewall profiles should be enabled and centrally reviewed.",
+                "Review with Get-NetFirewallProfile; apply through approved administrative policy tooling.",
+                "Rollback through the same administrative policy tooling after approval.",
+                ["firewall", "workstation-hardening", "admin-review"],
+            ),
+        ]
+        items: list[BenchmarkItem] = []
+        for item_id, benchmark_id, title, rationale, recommendation, command, rollback, tags in specs:
+            items.append(
+                BenchmarkItem(
+                    id=item_id,
+                    document_id=document.id,
+                    benchmark_id=benchmark_id,
+                    title=title,
+                    os_family="windows",
+                    profile_level="L1",
+                    automated=True,
+                    rationale=rationale,
+                    recommendation=recommendation,
+                    remediation_steps=[
+                        RemediationStep(
+                            title=title,
+                            command=command,
+                            expected_impact=rationale,
+                            rollback=rollback,
+                            approval_required=True,
+                        )
+                    ],
+                    rollback_notes=[rollback],
+                    evidence_fields=[
+                        EvidenceField(
+                            name=benchmark_id,
+                            description="Registry status emitted by the curated demo-ready script.",
+                        )
+                    ],
+                    citations=[benchmark_id],
+                    confidence=0.95,
+                    status="approved",
+                    tags=tags,
+                    candidate_modules=["cis_audit", "baseline_harden", "drift_check"],
+                )
+            )
+        if items:
+            self.repository.save_benchmark_items(items)
 
     def _ensure_default_settings(self) -> None:
         defaults = {
@@ -184,19 +315,222 @@ class HardSecNetService:
         curated_scripts = {
             "builtin-item-win-lock": (
                 "cis-windows-lock-screen.ps1",
-                """param([switch]$Apply)
-$Path = "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization"
-$Name = "NoLockScreen"
-$Value = 0
-if ($Apply) {
+                """param([switch]$Apply, [switch]$Rollback, [switch]$Status)
+$ErrorActionPreference = "Stop"
+$Path = "HKCU:\\Control Panel\\Desktop"
+$Name = "ScreenSaverIsSecure"
+$ActiveName = "ScreenSaveActive"
+$TimeoutName = "ScreenSaveTimeOut"
+$Value = "1"
+function Get-HardSecNetLockScreenState {
+    if (-not (Test-Path $Path)) {
+        return [pscustomobject]@{ Raw = "<missing>"; Active = "<missing>"; Timeout = "<missing>"; Enabled = $false }
+    }
+    $Property = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $Property -or $null -eq $Property.$Name) {
+        return [pscustomobject]@{ Raw = "<not configured>"; Active = "<unknown>"; Timeout = "<unknown>"; Enabled = $false }
+    }
+    $Active = (Get-ItemProperty -Path $Path -Name $ActiveName -ErrorAction SilentlyContinue).$ActiveName
+    $Timeout = (Get-ItemProperty -Path $Path -Name $TimeoutName -ErrorAction SilentlyContinue).$TimeoutName
+    return [pscustomobject]@{ Raw = $Property.$Name; Active = $Active; Timeout = $Timeout; Enabled = ([string]$Property.$Name -eq "1") }
+}
+function Write-HardSecNetLockScreenStatus {
+    $State = Get-HardSecNetLockScreenState
+    $Label = if ($State.Enabled) { "ON" } else { "OFF" }
+    Write-Output "Setting: Windows secure screen saver lock"
+    Write-Output "Registry: $Path\\$Name"
+    Write-Output "Current secure value: $($State.Raw)"
+    Write-Output "Screen saver active: $($State.Active)"
+    Write-Output "Timeout seconds: $($State.Timeout)"
+    Write-Output "Status: $Label"
+    Write-Output "Benefit: requires the user's password after inactivity, reducing unattended-session access risk."
+}
+if ($Status) {
+    Write-HardSecNetLockScreenStatus
+} elseif ($Rollback) {
+    if (-not (Test-Path $Path)) {
+        New-Item -Path $Path -Force | Out-Null
+    }
+    Set-ItemProperty -Path $Path -Name $Name -Value "0"
+    Set-ItemProperty -Path $Path -Name $ActiveName -Value "1"
+    Set-ItemProperty -Path $Path -Name $TimeoutName -Value "60"
+    Write-Output "Dehardened demo state: secure screen saver lock is OFF with $Name=0"
+    Write-HardSecNetLockScreenStatus
+} elseif ($Apply) {
     if (-not (Test-Path $Path)) {
         New-Item -Path $Path -Force | Out-Null
     }
     Set-ItemProperty -Path $Path -Name $Name -Value $Value
-    Write-Output "Applied lock screen baseline: $Name=$Value"
+    Set-ItemProperty -Path $Path -Name $ActiveName -Value "1"
+    Set-ItemProperty -Path $Path -Name $TimeoutName -Value "60"
+    Write-Output "Applied secure screen saver baseline: $Name=$Value"
+    Write-HardSecNetLockScreenStatus
 } else {
-    Write-Output "Dry run: would ensure $Path has $Name=$Value"
+    Write-Output "Dry run: would ensure $Path has $Name=$Value; rollback demo would set $Name=1"
+    Write-HardSecNetLockScreenStatus
 }
+""",
+            ),
+            "builtin-item-win-file-ext": (
+                "cis-windows-show-file-extensions.ps1",
+                """param([switch]$Apply, [switch]$Rollback, [switch]$Status)
+$ErrorActionPreference = "Stop"
+$Path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"
+$Name = "HideFileExt"
+function Write-State {
+    $Raw = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
+    if ($null -eq $Raw) { $Raw = "<not configured>" }
+    $On = ([string]$Raw -eq "0")
+    Write-Output "Setting: Show file extensions"
+    Write-Output "Registry: $Path\\$Name"
+    Write-Output "Current value: $Raw"
+    Write-Output ("Status: " + $(if ($On) { "ON" } else { "OFF" }))
+    Write-Output "Benefit: makes disguised executables easier to spot, for example invoice.pdf.exe."
+}
+if ($Status) { Write-State }
+elseif ($Rollback) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value 1
+    Write-Output "Dehardened demo state: file extensions are hidden."
+    Write-State
+}
+elseif ($Apply) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value 0
+    Write-Output "Applied baseline: file extensions are visible."
+    Write-State
+}
+else { Write-Output "Dry run: would set $Name=0"; Write-State }
+""",
+            ),
+            "builtin-item-win-screen-active": (
+                "cis-windows-screen-saver-active.ps1",
+                """param([switch]$Apply, [switch]$Rollback, [switch]$Status)
+$ErrorActionPreference = "Stop"
+$Path = "HKCU:\\Control Panel\\Desktop"
+$Name = "ScreenSaveActive"
+function Write-State {
+    $Raw = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
+    if ($null -eq $Raw) { $Raw = "<not configured>" }
+    $On = ([string]$Raw -eq "1")
+    Write-Output "Setting: Screen saver activation"
+    Write-Output "Registry: $Path\\$Name"
+    Write-Output "Current value: $Raw"
+    Write-Output ("Status: " + $(if ($On) { "ON" } else { "OFF" }))
+    Write-Output "Benefit: creates an inactivity trigger so the session can lock automatically."
+}
+if ($Status) { Write-State }
+elseif ($Rollback) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value "0"
+    Write-Output "Dehardened demo state: screen saver activation is OFF."
+    Write-State
+}
+elseif ($Apply) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value "1"
+    Write-Output "Applied baseline: screen saver activation is ON."
+    Write-State
+}
+else { Write-Output "Dry run: would set $Name=1"; Write-State }
+""",
+            ),
+            "builtin-item-win-screen-timeout": (
+                "cis-windows-screen-saver-timeout.ps1",
+                """param([switch]$Apply, [switch]$Rollback, [switch]$Status)
+$ErrorActionPreference = "Stop"
+$Path = "HKCU:\\Control Panel\\Desktop"
+$Name = "ScreenSaveTimeOut"
+function Write-State {
+    $Raw = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
+    if ($null -eq $Raw) { $Raw = "<not configured>" }
+    $Parsed = 999999
+    [void][int]::TryParse([string]$Raw, [ref]$Parsed)
+    $On = ($Parsed -le 60)
+    Write-Output "Setting: Inactivity timeout"
+    Write-Output "Registry: $Path\\$Name"
+    Write-Output "Current value: $Raw seconds"
+    Write-Output ("Status: " + $(if ($On) { "ON" } else { "OFF" }))
+    Write-Output "Benefit: shortens the time an unattended session remains exposed."
+}
+if ($Status) { Write-State }
+elseif ($Rollback) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value "600"
+    Write-Output "Dehardened demo state: inactivity timeout relaxed to 600 seconds."
+    Write-State
+}
+elseif ($Apply) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value "60"
+    Write-Output "Applied baseline: inactivity timeout set to 60 seconds."
+    Write-State
+}
+else { Write-Output "Dry run: would set $Name=60"; Write-State }
+""",
+            ),
+            "builtin-item-win-autorun": (
+                "cis-windows-disable-autorun.ps1",
+                """param([switch]$Apply, [switch]$Rollback, [switch]$Status)
+$ErrorActionPreference = "Stop"
+$Path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+$Name = "NoDriveTypeAutoRun"
+function Write-State {
+    $Raw = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
+    if ($null -eq $Raw) { $Raw = "<not configured>" }
+    $On = ([string]$Raw -eq "255")
+    Write-Output "Setting: Disable AutoRun for removable media"
+    Write-Output "Registry: $Path\\$Name"
+    Write-Output "Current value: $Raw"
+    Write-Output ("Status: " + $(if ($On) { "ON" } else { "OFF" }))
+    Write-Output "Benefit: reduces automatic execution risk from USB/removable drives."
+}
+if ($Status) { Write-State }
+elseif ($Rollback) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value 145
+    Write-Output "Dehardened demo state: AutoRun policy returned to a permissive demo value."
+    Write-State
+}
+elseif ($Apply) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value 255
+    Write-Output "Applied baseline: AutoRun is disabled for all drive types."
+    Write-State
+}
+else { Write-Output "Dry run: would set $Name=255"; Write-State }
+""",
+            ),
+            "builtin-item-win-zone-info": (
+                "cis-windows-preserve-zone-info.ps1",
+                """param([switch]$Apply, [switch]$Rollback, [switch]$Status)
+$ErrorActionPreference = "Stop"
+$Path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments"
+$Name = "SaveZoneInformation"
+function Write-State {
+    $Raw = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
+    if ($null -eq $Raw) { $Raw = "<not configured>" }
+    $On = ([string]$Raw -eq "2")
+    Write-Output "Setting: Preserve downloaded-file zone information"
+    Write-Output "Registry: $Path\\$Name"
+    Write-Output "Current value: $Raw"
+    Write-Output ("Status: " + $(if ($On) { "ON" } else { "OFF" }))
+    Write-Output "Benefit: keeps origin metadata so Windows can warn about downloaded files."
+}
+if ($Status) { Write-State }
+elseif ($Rollback) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value 1
+    Write-Output "Dehardened demo state: zone information preservation is disabled."
+    Write-State
+}
+elseif ($Apply) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-ItemProperty -Path $Path -Name $Name -Value 2
+    Write-Output "Applied baseline: downloaded-file zone information is preserved."
+    Write-State
+}
+else { Write-Output "Dry run: would set $Name=2"; Write-State }
 """,
             ),
             "builtin-item-linux-ufw": (
@@ -251,6 +585,259 @@ fi
             self.repository.save_benchmark_items(updated)
             self.repository.set_setting("curated_ready_script_count", str(len(updated)))
 
+    def _ensure_benchmark_profile_templates(self) -> None:
+        self._ensure_windows_benchmark_profile_templates()
+        self._ensure_ubuntu_benchmark_profile_templates()
+
+    def _ensure_windows_benchmark_profile_templates(self) -> None:
+        windows_documents = [
+            document
+            for document in self.list_benchmark_documents("windows")
+            if document.id == "doc-0bec44c02877"
+            or (
+                document.name == "CIS Microsoft Windows 11 Stand-alone Benchmark"
+                and document.version == "v4.0.0"
+            )
+        ]
+        windows_documents.sort(key=lambda document: 0 if document.id == "doc-0bec44c02877" else 1)
+        windows_items = (
+            self.list_benchmark_items(document_id=windows_documents[0].id)
+            if windows_documents
+            else self.list_benchmark_items(os_family="windows")
+        )
+        if not windows_items:
+            return
+
+        def ids_for_prefix(prefix: str) -> list[str]:
+            return [item.benchmark_id for item in windows_items if item.benchmark_id.startswith(prefix)]
+
+        workstation_ready_ids = [
+            "CIS-Windows-11-1.4.1",
+            "CIS-Windows-Demo-FileExtensions",
+            "CIS-Windows-Demo-Autorun",
+            "CIS-Windows-Demo-ZoneInformation",
+            "CIS-Windows-Demo-ScreenSaverActive",
+            "CIS-Windows-Demo-ScreenSaverTimeout",
+        ]
+        workstation_review_ids = [
+            "CIS-Windows-Workstation-PasswordPolicy",
+            "CIS-Windows-Workstation-FirewallPolicy",
+        ]
+        workstation_benchmark_ids = [
+            *workstation_ready_ids,
+            *workstation_review_ids,
+            *ids_for_prefix("1."),
+            *ids_for_prefix("9."),
+            *ids_for_prefix("17."),
+            *ids_for_prefix("18.3."),
+            *ids_for_prefix("18.5."),
+            *ids_for_prefix("18.9."),
+        ]
+
+        profile_specs = [
+            (
+                "demo_windows_workstation_hardening",
+                "Windows Workstation Hardening",
+                "Workstation baseline covering live reversible settings plus CIS account, firewall, audit, and administrative-template controls.",
+                workstation_benchmark_ids,
+                "balanced",
+                True,
+            ),
+            (
+                "demo_windows_session_security",
+                "Windows Session Security",
+                "Focused profile for inactivity lock and user session protection.",
+                ["CIS-Windows-11-1.4.1"],
+                "balanced",
+                False,
+            ),
+            (
+                "demo_windows_inactivity_lock",
+                "Windows Inactivity Lock",
+                "Focused profile for automatic inactivity locking behavior.",
+                ["CIS-Windows-Demo-ScreenSaverActive", "CIS-Windows-Demo-ScreenSaverTimeout"],
+                "balanced",
+                False,
+            ),
+            (
+                "demo_windows_removable_media_safety",
+                "Windows Removable Media Safety",
+                "Focused profile for AutoRun/removable-media risk reduction.",
+                ["CIS-Windows-Demo-Autorun", "CIS-Windows-Demo-ZoneInformation", "CIS-Windows-Demo-FileExtensions"],
+                "balanced",
+                False,
+            ),
+            (
+                "cis_windows_11_full_benchmark",
+                "CIS Windows 11 Full Benchmark",
+                "All extracted Windows 11 CIS controls from the imported benchmark PDF.",
+                [item.benchmark_id for item in windows_items],
+                "strict",
+                True,
+            ),
+            (
+                "cis_windows_11_account_policies",
+                "CIS Windows 11 Account Policies",
+                "Password and account lockout policy controls from CIS section 1.",
+                ids_for_prefix("1."),
+                "balanced",
+                True,
+            ),
+            (
+                "cis_windows_11_local_policies",
+                "CIS Windows 11 Local Policies",
+                "Local policy, user rights, and security option controls from CIS section 2.",
+                ids_for_prefix("2."),
+                "balanced",
+                True,
+            ),
+            (
+                "cis_windows_11_firewall",
+                "CIS Windows 11 Firewall",
+                "Windows Defender Firewall controls from CIS section 9.",
+                ids_for_prefix("9."),
+                "balanced",
+                True,
+            ),
+            (
+                "cis_windows_11_audit_policy",
+                "CIS Windows 11 Audit Policy",
+                "Advanced audit policy controls from CIS section 17.",
+                ids_for_prefix("17."),
+                "audit_only",
+                False,
+            ),
+            (
+                "cis_windows_11_admin_templates",
+                "CIS Windows 11 Administrative Templates",
+                "Administrative template and security policy controls from CIS sections 18 and 19.",
+                [*ids_for_prefix("18."), *ids_for_prefix("19.")],
+                "balanced",
+                True,
+            ),
+        ]
+        modules = [module.id for module in self.list_modules("windows") if module.default_enabled]
+        saved = 0
+        for profile_id, name, description, benchmark_ids, strictness, review_required in profile_specs:
+            if not benchmark_ids:
+                continue
+            self.repository.save_profile(
+                ProfileTemplate(
+                    id=profile_id,
+                    name=name,
+                    os_family="windows",
+                    description=description,
+                    benchmark_ids=list(dict.fromkeys(benchmark_ids)),
+                    module_ids=modules,
+                    strictness=strictness,
+                    built_in=True,
+                    review_required=review_required,
+                )
+            )
+            saved += 1
+        self.repository.set_setting("windows_benchmark_profile_count", str(saved))
+
+    def _ensure_ubuntu_benchmark_profile_templates(self) -> None:
+        ubuntu_documents = [
+            document
+            for document in self.list_benchmark_documents("linux")
+            if document.id == "doc-d0e7eed31013"
+            or (
+                document.name == "CIS Ubuntu Linux 24.04 LTS Benchmark"
+                and document.version == "v1.0.0"
+            )
+        ]
+        ubuntu_documents.sort(key=lambda document: 0 if document.id == "doc-d0e7eed31013" else 1)
+        ubuntu_items = (
+            self.list_benchmark_items(document_id=ubuntu_documents[0].id)
+            if ubuntu_documents
+            else self.list_benchmark_items(os_family="linux")
+        )
+        if not ubuntu_items:
+            return
+
+        def ids_for_prefix(prefix: str) -> list[str]:
+            return [item.benchmark_id for item in ubuntu_items if item.benchmark_id.startswith(prefix)]
+
+        profile_specs = [
+            (
+                "cis_ubuntu_2404_full_benchmark",
+                "CIS Ubuntu 24.04 Full Benchmark",
+                "All extracted Ubuntu 24.04 CIS controls from the imported benchmark PDF.",
+                [item.benchmark_id for item in ubuntu_items],
+                "strict",
+                True,
+            ),
+            (
+                "cis_ubuntu_2404_initial_setup",
+                "CIS Ubuntu 24.04 Initial Setup",
+                "Filesystem, bootloader, package, update, and login-warning controls from CIS section 1.",
+                ids_for_prefix("1."),
+                "balanced",
+                True,
+            ),
+            (
+                "cis_ubuntu_2404_services",
+                "CIS Ubuntu 24.04 Services",
+                "Service, package, time sync, and job scheduler controls from CIS section 2.",
+                ids_for_prefix("2."),
+                "balanced",
+                True,
+            ),
+            (
+                "cis_ubuntu_2404_network",
+                "CIS Ubuntu 24.04 Network",
+                "Network kernel, firewall, nftables, iptables, and UFW controls from CIS sections 3 and 4.",
+                [*ids_for_prefix("3."), *ids_for_prefix("4.")],
+                "balanced",
+                True,
+            ),
+            (
+                "cis_ubuntu_2404_access_auth",
+                "CIS Ubuntu 24.04 Access And Authentication",
+                "SSH, privilege escalation, PAM, password, and account controls from CIS section 5.",
+                ids_for_prefix("5."),
+                "balanced",
+                True,
+            ),
+            (
+                "cis_ubuntu_2404_logging_audit",
+                "CIS Ubuntu 24.04 Logging And Audit",
+                "System logging, auditd, and log file controls from CIS section 6.",
+                ids_for_prefix("6."),
+                "audit_only",
+                False,
+            ),
+            (
+                "cis_ubuntu_2404_system_maintenance",
+                "CIS Ubuntu 24.04 System Maintenance",
+                "System file permission, user, group, and maintenance controls from CIS section 7.",
+                ids_for_prefix("7."),
+                "balanced",
+                True,
+            ),
+        ]
+        modules = [module.id for module in self.list_modules("linux") if module.default_enabled]
+        saved = 0
+        for profile_id, name, description, benchmark_ids, strictness, review_required in profile_specs:
+            if not benchmark_ids:
+                continue
+            self.repository.save_profile(
+                ProfileTemplate(
+                    id=profile_id,
+                    name=name,
+                    os_family="linux",
+                    description=description,
+                    benchmark_ids=list(dict.fromkeys(benchmark_ids)),
+                    module_ids=modules,
+                    strictness=strictness,
+                    built_in=True,
+                    review_required=review_required,
+                )
+            )
+            saved += 1
+        self.repository.set_setting("ubuntu_benchmark_profile_count", str(saved))
+
     def _load_module_catalog(self) -> list[ModuleDefinition]:
         payload = json.loads(
             resources.files("hardsecnet_pyside.resources")
@@ -269,6 +856,39 @@ fi
     def current_device(self) -> DeviceRecord:
         return self.get_current_device()
 
+    def list_devices(self) -> list[DeviceRecord]:
+        return sorted(self.repository.list_devices(), key=lambda item: (item.os_family, item.name, item.id))
+
+    def add_local_device(
+        self,
+        *,
+        name: str,
+        os_family: str,
+        hostname: str,
+        make_current: bool = True,
+    ) -> DeviceRecord:
+        normalized_os = os_family.strip().lower()
+        if normalized_os not in {"windows", "linux"}:
+            raise ValueError("Device OS must be windows or linux.")
+        device = DeviceRecord(
+            id=f"device-{uuid.uuid4().hex[:12]}",
+            name=name.strip() or f"{normalized_os.title()} Device",
+            os_family=normalized_os,
+            hostname=hostname.strip() or "localhost",
+            metadata={"managed_by": "hardsecnet-pyside", "source": "manual"},
+        )
+        self.repository.save_device(device)
+        if make_current:
+            self.repository.set_setting("current_device_id", device.id)
+        return device
+
+    def set_current_device(self, device_id: str) -> DeviceRecord:
+        device = self.repository.get_device(device_id)
+        if device is None:
+            raise ValueError(f"Unknown device: {device_id}")
+        self.repository.set_setting("current_device_id", device.id)
+        return device
+
     def list_modules(self, os_family: str | None = None) -> list[ModuleDefinition]:
         if not os_family:
             return list(self._module_catalog)
@@ -280,10 +900,31 @@ fi
 
     def list_profiles(self, os_family: str | None = None) -> list[ProfileTemplate]:
         profiles = self.repository.list_profiles(os_family=os_family)
+        profiles = [profile for profile in profiles if not self._hide_from_demo_profile_list(profile)]
         return sorted(profiles, key=lambda item: (item.os_family, item.name))
 
     def load_profiles(self, os_family: str | None = None) -> list[ProfileTemplate]:
         return self.list_profiles(os_family)
+
+    def _hide_from_demo_profile_list(self, profile: ProfileTemplate) -> bool:
+        if profile.os_family not in {"windows", "linux"}:
+            return False
+        legacy_ids = {"default_windows_desktop", "strict_candidate", "default_ubuntu_desktop"}
+        legacy_ids.update(
+            {
+                "demo_windows_file_attachment_safety",
+            }
+        )
+        if profile.id in legacy_ids:
+            return True
+        return (
+            profile.id.startswith("profile-doc-")
+            and profile.name
+            in {
+                "CIS Microsoft Windows 11 Stand-alone Benchmark Imported Baseline",
+                "CIS Ubuntu Linux 24.04 LTS Benchmark Imported Baseline",
+            }
+        )
 
     def list_benchmark_documents(self, os_family: str | None = None) -> list[BenchmarkDocument]:
         documents = self.repository.list_benchmark_documents()
@@ -374,12 +1015,20 @@ fi
         *,
         operator: str | None = None,
         execute: bool = False,
+        rollback: bool = False,
+        status_check: bool = False,
     ) -> ScriptExecutionRecord:
         item = self._get_benchmark_item(item_id)
         readiness = self.classify_script_item(item)
         allow_execute = os.getenv("HARDSECNET_ALLOW_SCRIPT_EXECUTION") == "1"
-        mode = "execute" if execute else "dry_run"
-        command = self._script_execution_command(item, readiness)
+        mode = "status" if status_check else "rollback" if rollback else "execute" if execute else "dry_run"
+        command = self._script_execution_command(
+            item,
+            readiness,
+            execute=execute,
+            rollback=rollback,
+            status_check=status_check,
+        )
         execution_id = f"script-{uuid.uuid4().hex[:12]}"
         execution = ScriptExecutionRecord(
             id=execution_id,
@@ -397,11 +1046,15 @@ fi
 
         if readiness.status == "missing":
             execution.error = readiness.reason
-        elif execute and not allow_execute:
+        elif status_check and readiness.status != "ready":
+            execution.error = f"Status check blocked because readiness is {readiness.status}."
+        elif status_check:
+            execution.status, execution.output, execution.error = self._execute_script_command(command)
+        elif (execute or rollback) and not allow_execute:
             execution.error = "Live script execution is disabled. Set HARDSECNET_ALLOW_SCRIPT_EXECUTION=1 to enable it."
-        elif execute and readiness.status != "ready":
+        elif (execute or rollback) and readiness.status != "ready":
             execution.error = f"Script execution blocked because readiness is {readiness.status}."
-        elif execute:
+        elif execute or rollback:
             execution.status, execution.output, execution.error = self._execute_script_command(command)
         else:
             execution.status = "dry_run_recorded"
@@ -512,13 +1165,7 @@ fi
             raise ValueError(f"Unknown profile: {profile_id}")
 
         modules = selected_modules or profile.module_ids
-        benchmark_items = [
-            item
-            for item in self.repository.list_benchmark_items(os_family=device.os_family)
-            if item.benchmark_id in profile.benchmark_ids
-        ]
-        if not benchmark_items:
-            benchmark_items = self.repository.list_benchmark_items(os_family=device.os_family)
+        benchmark_items = self._profile_benchmark_scope(device.os_family, profile)
 
         run_id = f"run-{uuid.uuid4().hex[:12]}"
         run = RunRecord(
@@ -528,11 +1175,23 @@ fi
             os_family=device.os_family,
             status="completed",
             modules=modules,
+            summary={
+                "profile_name": profile.name,
+                "benchmark_scope": "profile_selected_controls" if profile.benchmark_ids else "all_available_for_device",
+                "benchmark_count": len(benchmark_items),
+            },
         )
 
         run.module_results = self._build_module_results(run, benchmark_items, modules)
         findings = self._build_findings(run, benchmark_items, profile)
         run.summary = self._summarize_findings(findings)
+        run.summary.update(
+            {
+                "profile_name": profile.name,
+                "benchmark_scope": "profile_selected_controls" if profile.benchmark_ids else "all_available_for_device",
+                "benchmark_count": len(benchmark_items),
+            }
+        )
         run.ended_at = utc_now()
 
         self.repository.save_run(run)
@@ -551,6 +1210,7 @@ fi
 
         report.executive_summary = generated_summary
         report.technical_summary = self._technical_summary(run, findings, comparisons)
+        self._rewrite_report_artifacts(report, run, findings, comparisons)
         self.repository.save_report(report)
 
         for task in (reasoning_task, remediation_task, approval_task, report_task):
@@ -715,6 +1375,37 @@ fi
             )
         return results
 
+    def _profile_benchmark_scope(self, os_family: str, profile: ProfileTemplate) -> list[BenchmarkItem]:
+        if profile.id.startswith("cis_windows_11_"):
+            items = self.repository.list_benchmark_items(document_id="doc-0bec44c02877")
+            if not items:
+                items = self.repository.list_benchmark_items(os_family=os_family)
+        elif profile.id.startswith("cis_ubuntu_2404_"):
+            items = self.repository.list_benchmark_items(document_id="doc-d0e7eed31013")
+            if not items:
+                items = self.repository.list_benchmark_items(os_family=os_family)
+        else:
+            items = self.repository.list_benchmark_items(os_family=os_family)
+        if not items:
+            return []
+        if profile.benchmark_ids:
+            allowed = set(profile.benchmark_ids)
+            selected = [item for item in items if item.benchmark_id in allowed]
+            if selected:
+                deduped: dict[str, BenchmarkItem] = {}
+                for item in selected:
+                    deduped.setdefault(item.benchmark_id, item)
+                items = list(deduped.values())
+        priority = {benchmark_id: index for index, benchmark_id in enumerate(profile.benchmark_ids)}
+        return sorted(
+            items,
+            key=lambda item: (
+                0 if item.benchmark_id in priority else 1,
+                priority.get(item.benchmark_id, len(priority)),
+                item.benchmark_id,
+            ),
+        )
+
     def _build_findings(
         self,
         run: RunRecord,
@@ -830,6 +1521,26 @@ fi
         self.repository.save_report(report)
         return report
 
+    def _rewrite_report_artifacts(
+        self,
+        report: ReportBundle,
+        run: RunRecord,
+        findings: list[ComplianceFinding],
+        comparisons: list[ComparisonDelta],
+    ) -> None:
+        if report.json_path:
+            Path(report.json_path).write_text(
+                to_json(self.exportable_report_payload(run, findings, comparisons, report)),
+                encoding="utf-8",
+            )
+        if report.html_path:
+            Path(report.html_path).write_text(
+                self._render_report_html(run, findings, comparisons, report),
+                encoding="utf-8",
+            )
+        if report.pdf_path:
+            self._write_pdf(Path(report.pdf_path), run, findings, comparisons, report)
+
     def exportable_report_payload(
         self,
         run: RunRecord,
@@ -855,24 +1566,38 @@ fi
         raise ValueError(f"Unknown benchmark item: {item_id}")
 
     def _resolve_script_path(self, item: BenchmarkItem) -> Path | None:
-        if not item.script_path:
-            return None
-        raw_path = Path(item.script_path)
-        candidates = [raw_path]
-        if not raw_path.is_absolute():
-            candidates.extend(
-                [
-                    self.paths.project_root / raw_path,
-                    self.paths.workspace_root / raw_path,
-                    self.paths.benchmark_exports_dir / raw_path,
-                ]
-            )
-
+        candidates: list[Path] = []
+        if item.script_path:
+            raw_path = Path(item.script_path)
+            candidates.append(raw_path)
+            if not raw_path.is_absolute():
+                candidates.extend(
+                    [
+                        self.paths.project_root / raw_path,
+                        self.paths.workspace_root / raw_path,
+                        self.paths.benchmark_exports_dir / raw_path,
+                    ]
+                )
+        suffix = ".ps1" if item.os_family == "windows" else ".sh"
+        inferred_name = f"{item.benchmark_id}{suffix}"
         document = self.repository.get_benchmark_document(item.document_id)
         if document is not None:
             script_dir = document.provenance.get("export_script_dir") or document.provenance.get("generated_script_dir")
             if script_dir:
-                candidates.append(Path(str(script_dir)) / raw_path.name)
+                candidates.append(Path(str(script_dir)) / inferred_name)
+                if item.script_path:
+                    candidates.append(Path(str(script_dir)) / Path(item.script_path).name)
+            export_dir = document.provenance.get("export_dir")
+            if export_dir:
+                candidates.append(Path(str(export_dir)) / "scripts" / inferred_name)
+
+        if not item.script_path:
+            candidates.extend(
+                [
+                    self.paths.generated_scripts_dir / item.document_id / inferred_name,
+                    self.paths.benchmark_exports_dir / inferred_name,
+                ]
+            )
 
         for candidate in candidates:
             if candidate.exists() and candidate.is_file():
@@ -904,12 +1629,27 @@ fi
             return "medium"
         return "low"
 
-    def _script_execution_command(self, item: BenchmarkItem, readiness: ScriptReadiness) -> str:
+    def _script_execution_command(
+        self,
+        item: BenchmarkItem,
+        readiness: ScriptReadiness,
+        *,
+        execute: bool = False,
+        rollback: bool = False,
+        status_check: bool = False,
+    ) -> str:
         if not readiness.script_path:
             return ""
         script_path = Path(readiness.script_path)
         if item.os_family == "windows" or script_path.suffix.lower() == ".ps1":
-            return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{script_path}"'
+            apply_flag = " -Status" if status_check else " -Rollback" if rollback else " -Apply" if execute else ""
+            return f'powershell -NoProfile -ExecutionPolicy Bypass -File "{script_path}"{apply_flag}'
+        if status_check:
+            return f'bash "{script_path}"'
+        if rollback:
+            return f'HARDSECNET_ROLLBACK=1 bash "{script_path}"'
+        if execute:
+            return f'HARDSECNET_APPLY=1 bash "{script_path}"'
         return f'bash "{script_path}"'
 
     def _execute_script_command(self, command: str) -> tuple[str, str, str]:
@@ -1021,7 +1761,7 @@ fi
     <section>
       <span class="pill">Benchmark-aware hardening report</span>
       <h1>{report.title}</h1>
-      <p>{self._executive_summary(run, findings)}</p>
+      <p>{report.executive_summary or self._executive_summary(run, findings)}</p>
       <div class="meta">
         <div><strong>Run ID</strong><br />{run.id}</div>
         <div><strong>Device</strong><br />{self.get_current_device().name}</div>
@@ -1046,7 +1786,7 @@ fi
     </section>
     <section>
       <h2>Technical Summary</h2>
-      <p>{self._technical_summary(run, findings, comparisons)}</p>
+      <p>{report.technical_summary or self._technical_summary(run, findings, comparisons)}</p>
     </section>
   </main>
 </body>
@@ -1072,7 +1812,6 @@ fi
             return
 
         document = fitz.open()
-        page = document.new_page()
         content_lines = [
             report.title,
             "",
@@ -1081,19 +1820,74 @@ fi
             f"Device: {self.get_current_device().name}",
             "",
             "Executive Summary",
-            self._executive_summary(run, findings),
+            report.executive_summary or self._executive_summary(run, findings),
             "",
             "Technical Summary",
-            self._technical_summary(run, findings, comparisons),
+            report.technical_summary or self._technical_summary(run, findings, comparisons),
             "",
             "Findings",
         ]
-        for finding in findings:
-            content_lines.append(f"- {finding.benchmark_id} | {finding.status} | {finding.title}")
-        text = "\n".join(content_lines)
-        page.insert_textbox(fitz.Rect(48, 48, 548, 780), text, fontsize=11)
+        max_pdf_findings = 180
+        for finding in findings[:max_pdf_findings]:
+            content_lines.extend(
+                [
+                    f"- {finding.benchmark_id} | {finding.status} | {finding.title}",
+                    f"  Expected: {finding.expected}",
+                    f"  Actual: {finding.actual}",
+                ]
+            )
+            if finding.remediation:
+                content_lines.append(f"  Remediation: {finding.remediation[0][:220]}")
+        if len(findings) > max_pdf_findings:
+            content_lines.extend(
+                [
+                    "",
+                    f"PDF finding list truncated at {max_pdf_findings} entries for readability.",
+                    "Open the HTML or JSON report for the complete finding set.",
+                ]
+            )
+        self._write_pdf_lines(document, content_lines)
         document.save(pdf_path)
         document.close()
+
+    def _write_pdf_lines(self, document: Any, lines: list[str]) -> None:
+        try:
+            import fitz  # type: ignore
+        except ImportError:  # pragma: no cover - guarded by caller
+            return
+
+        page_lines: list[str] = []
+        max_lines = 42
+        for line in lines:
+            wrapped = self._wrap_pdf_line(line)
+            for wrapped_line in wrapped:
+                page_lines.append(wrapped_line)
+                if len(page_lines) >= max_lines:
+                    page = document.new_page()
+                    page.insert_textbox(fitz.Rect(48, 48, 548, 780), "\n".join(page_lines), fontsize=10.5)
+                    page_lines = []
+        if page_lines or not lines:
+            page = document.new_page()
+            page.insert_textbox(fitz.Rect(48, 48, 548, 780), "\n".join(page_lines), fontsize=10.5)
+
+    def _wrap_pdf_line(self, line: str, width: int = 92) -> list[str]:
+        if len(line) <= width:
+            return [self._pdf_safe_line(line)]
+        chunks: list[str] = []
+        current = self._pdf_safe_line(line)
+        prefix = "  " if line.startswith("  ") else ""
+        while len(current) > width:
+            split_at = current.rfind(" ", 0, width)
+            if split_at <= 0:
+                split_at = width
+            chunks.append(current[:split_at])
+            current = prefix + current[split_at:].lstrip()
+        chunks.append(current)
+        return chunks
+
+    def _pdf_safe_line(self, line: str) -> str:
+        cleaned = line.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+        return cleaned.encode("latin-1", errors="replace").decode("latin-1")[:900]
 
     def _executive_summary(self, run: RunRecord, findings: list[ComplianceFinding]) -> str:
         summary = self._summarize_findings(findings)

@@ -39,6 +39,11 @@ HardSecNet PySide is a local-first CIS hardening studio for Windows and Linux. I
 - 2026-04-22: Local script readiness and guarded dry-run execution were added so CIS script candidates can be reviewed and evidenced without fleet control or default live system modification.
 - 2026-04-22: Optional Ollama-backed local explanation was added inside `AgentEngine`; deterministic fallback remains default for offline operation and tests.
 - 2026-04-22: Final local-baseline polish removed user-facing demo language, added readiness/status badge coloring, and seeded curated ready script candidates for built-in benchmark controls.
+- 2026-04-23: Dashboard labels/captions were improved, local add/switch device support was added, profile runs were changed to audit every available benchmark item for the current device OS, report artifacts were rewritten after AI summaries and PDF output paginated, and harden actions were wired to environment-gated ready-script execution.
+- 2026-04-23: Whole-app PySide verification found and fixed a benchmark harden selection-loss issue after dry-run refresh; final offscreen GUI workflow passed add-device, profile run, all-benchmark report coverage, dry-run, harden gate, and screenshot review.
+- 2026-04-23: A light command-center UI style was implemented for the PySide shell and verified with screenshots across Dashboard, Hardening, Reports, and Benchmarks.
+- 2026-04-23: Dashboard was cleaned for system-admin posture use by replacing AI-facing metrics with compliance, open findings, ready actions, last run, drift, and report readiness.
+- 2026-04-23: Demo UI was simplified around profile builder -> dashboard run -> AI finding explanations -> reports; Network was removed from navigation, Reports became openable, and AI Advisor gained Ollama status.
 
 ## Final Deliverable
 

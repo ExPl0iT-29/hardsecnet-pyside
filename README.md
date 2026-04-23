@@ -26,6 +26,8 @@ What works today:
 - local benchmark import and durable benchmark exports
 - script readiness review with risk, command preview, and dry-run artifacts
 - curated ready script examples for local baseline validation
+- manually added local device records with current-device switching
+- guarded harden execution for ready scripts when explicitly enabled
 - local run/report flow with findings and comparison deltas
 - local AI task records with deterministic fallback and optional Ollama-backed risk/report explanations
 - Windows and Ubuntu CIS benchmark bundles stored in the repo
@@ -91,6 +93,8 @@ The app provides:
 - local CIS benchmark browsing/import
 - generated script readiness and guarded dry runs
 - curated ready-script examples for built-in benchmark controls
+- add/switch local devices
+- guarded ready-script hardening
 - local profile execution
 - current-device dashboard flow
 - before/after drift comparison
@@ -106,6 +110,15 @@ hardsecnet-pyside
 ```
 
 When Ollama is unavailable or disabled, the app falls back to deterministic local explanations.
+
+Optional live hardening for a ready script:
+
+```powershell
+$env:HARDSECNET_ALLOW_SCRIPT_EXECUTION = "1"
+hardsecnet-pyside
+```
+
+With that gate set, the `Harden Ready Script` and `Harden Selected Script` actions execute only scripts classified as `ready`. Without that environment variable, hardening is blocked and an evidence artifact is still recorded.
 
 ## Verification
 

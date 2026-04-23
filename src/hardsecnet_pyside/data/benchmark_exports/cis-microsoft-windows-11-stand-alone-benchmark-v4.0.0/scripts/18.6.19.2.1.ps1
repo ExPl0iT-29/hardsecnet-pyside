@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 # Page 585
 
 # Remediation candidate
-registry value, custom templates (Configure-IPv6-Components-
-setting must be applied to change the registry value to the opposite state.
+# registry value, custom templates (Configure-IPv6-Components-
+# setting must be applied to change the registry value to the opposite state.
 
 # TODO: replace the commented/manual steps above with validated PowerShell or registry logic.

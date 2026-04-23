@@ -6,12 +6,13 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Audit guidance extracted from the benchmark
-# Navigate to the UI Path articulated in the Remediation section and confirm it is set as
-# prescribed.
-
-# Remediation candidate
 # Manual review required
-# Convert the remediation guidance below into a validated script action
-
-# TODO: replace the commented/manual steps above with validated PowerShell or registry logic.
+#
+# Reason: The CIS remediation guidance for "Allow Administrator account lockout" must be mapped to the
+# correct Windows 11 policy storage (Local Security Policy / security template key or registry-backed
+# setting). This generated stub does not provide that mapping, and implementing it without confirming
+# the authoritative key/value would be speculative.
+#
+# Next step for a safe conversion:
+# - Identify the exact underlying setting (e.g., security policy export key name or registry value)
+#   on Windows 11 for this control, then implement Status/Apply/Rollback with backups.

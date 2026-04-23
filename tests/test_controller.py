@@ -187,6 +187,22 @@ def test_ready_script_status_check_runs_without_live_execution_gate(tmp_path: Pa
     assert "HARDSECNET_ALLOW_SCRIPT_EXECUTION=1" not in execution.error
 
 
+def test_admin_required_status_check_is_blocked_cleanly_when_not_elevated(tmp_path: Path) -> None:
+    controller = HardSecNetController(project_root=tmp_path / "hardsecnet-pyside")
+    readiness = next(
+        (item for item in controller.list_script_readiness(os_family="windows") if item.benchmark_id == "17.7.4"),
+        None,
+    )
+    if readiness is None:
+        return
+
+    execution = controller.check_script_status(readiness.item_id, operator="pytest")
+
+    assert execution.mode == "status"
+    assert execution.status == "blocked"
+    assert "requires an elevated Administrator session" in execution.error
+
+
 def test_windows_workstation_profile_has_broad_scope_and_multiple_ready_settings(tmp_path: Path) -> None:
     controller = HardSecNetController(project_root=tmp_path / "hardsecnet-pyside")
     profile = controller.repository.get_profile("demo_windows_workstation_hardening")
@@ -219,11 +235,32 @@ def test_demo_profile_list_hides_legacy_windows_clutter(tmp_path: Path) -> None:
     assert "CIS Windows 11 Full Benchmark" in names
     assert "Windows Workstation Hardening" in names
     assert "Windows Removable Media Safety" in names
+    assert "Password Expiry And Public Firewall" in names
+    assert "Private And Public Firewall On" in names
     if any(item.benchmark_id.startswith("9.") for item in controller.list_benchmark_items(os_family="windows")):
         assert "CIS Windows 11 Firewall" in names
     assert "Default Windows Desktop" not in names
     assert "Strict Candidate" not in names
     assert not any(profile_id.startswith("profile-doc-") for profile_id in ids)
+
+
+def test_password_expiry_and_public_firewall_profile_has_expected_scope(tmp_path: Path) -> None:
+    controller = HardSecNetController(project_root=tmp_path / "hardsecnet-pyside")
+    profile = controller.repository.get_profile("demo_windows_password_expiry_public_firewall")
+
+    assert profile is not None
+    assert "1.1.2" in profile.benchmark_ids
+    assert set(profile.benchmark_ids).issuperset(
+        {"9.3.1", "9.3.2", "9.3.3", "9.3.4", "9.3.5", "9.3.6", "9.3.7", "9.3.8", "9.3.9", "17.7.4"}
+    )
+
+
+def test_private_and_public_firewall_on_profile_has_expected_scope(tmp_path: Path) -> None:
+    controller = HardSecNetController(project_root=tmp_path / "hardsecnet-pyside")
+    profile = controller.repository.get_profile("demo_windows_private_public_firewall_on")
+
+    assert profile is not None
+    assert profile.benchmark_ids == ["9.2.1", "9.3.1"]
 
 
 def test_demo_profile_list_hides_legacy_linux_clutter(tmp_path: Path) -> None:

@@ -327,6 +327,7 @@ class HardeningPage(BasePage):
         self.finding_table = QtWidgets.QTableWidget()
         self.details = QtWidgets.QTextEdit()
         self.details.setReadOnly(True)
+        self.selected_profile_id: str | None = None
 
         run_button = QtWidgets.QPushButton("Run Profile")
         run_button.clicked.connect(self._run_profile)
@@ -353,6 +354,7 @@ class HardeningPage(BasePage):
         self.run_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.finding_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.run_table.itemSelectionChanged.connect(self._show_run_details)
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
 
         self.body.addLayout(header)
         self.body.addWidget(device_group)
@@ -369,6 +371,9 @@ class HardeningPage(BasePage):
         device = self.controller.get_current_device()
         self.device_label.setText(f"{device.name} ({device.hostname}) - {device.os_family}")
 
+        current_profile_id = self.selected_profile_id or (
+            str(self.profile_combo.currentData()) if self.profile_combo.currentData() else None
+        )
         self.profile_combo.blockSignals(True)
         self.profile_combo.clear()
         for profile in self.controller.list_profiles(device.os_family):
@@ -376,19 +381,11 @@ class HardeningPage(BasePage):
         if self.profile_combo.count() == 0:
             for profile in self.controller.list_profiles():
                 self.profile_combo.addItem(profile.name, profile.id)
+        if current_profile_id:
+            index = self.profile_combo.findData(current_profile_id)
+            if index >= 0:
+                self.profile_combo.setCurrentIndex(index)
         self.profile_combo.blockSignals(False)
-
-        profile_id = self.profile_combo.currentData()
-        profile = self.controller.repository.get_profile(profile_id) if profile_id else None
-        modules = [
-            module for module in self.controller.list_modules(device.os_family)
-            if profile is None or module.id in profile.module_ids
-        ]
-        _fill(
-            self.module_table,
-            ["Module", "Purpose", "Enabled"],
-            [[module.name, module.description, "Yes"] for module in modules],
-        )
 
         runs = self.controller.list_runs(device.id)
         _fill(
@@ -405,7 +402,7 @@ class HardeningPage(BasePage):
             [[item.benchmark_id, item.title, item.status, item.severity, f"{item.confidence:.2f}"] for item in findings],
         )
         _paint_status_column(self.finding_table, 2)
-        self._show_run_details()
+        self._on_profile_changed()
 
     def _run_profile(self) -> None:
         profile_id = self.profile_combo.currentData()
@@ -474,20 +471,78 @@ class HardeningPage(BasePage):
         ]
         return ready
 
+    def _on_profile_changed(self) -> None:
+        profile_id = self.profile_combo.currentData()
+        self.selected_profile_id = str(profile_id) if profile_id else None
+        self._refresh_profile_details()
+
+    def _refresh_profile_details(self) -> None:
+        device = self.controller.get_current_device()
+        profile_id = self.profile_combo.currentData()
+        profile = self.controller.repository.get_profile(profile_id) if profile_id else None
+        modules = [
+            module for module in self.controller.list_modules(device.os_family)
+            if profile is None or module.id in profile.module_ids
+        ]
+        _fill(
+            self.module_table,
+            ["Module", "Purpose", "Enabled"],
+            [[module.name, module.description, "Yes"] for module in modules],
+        )
+
+        ready = self._ready_scripts_for_selected_profile()
+        if profile is None:
+            self.details.setPlainText("No profile selected.")
+            return
+
+        self.run_table.clearSelection()
+        self.details.setPlainText(
+            "\n".join(
+                [
+                    f"Profile: {profile.name}",
+                    f"Profile ID: {profile.id}",
+                    f"Description: {profile.description}",
+                    f"Modules in scope: {len(profile.module_ids)}",
+                    f"Benchmarks in scope: {len(profile.benchmark_ids)}",
+                    f"Ready scripts in scope: {len(ready)}",
+                ]
+            )
+        )
+
     def _format_script_executions(self, executions) -> list[str]:
         lines: list[str] = []
         for execution in executions:
+            display_status = self._display_execution_status(execution)
+            output = self._display_execution_output(execution)
+            error = self._display_execution_error(execution)
             lines.extend(
                 [
                     f"Benchmark: {execution.benchmark_id}",
-                    f"Execution: {execution.id} | {execution.mode} | {execution.status}",
-                    f"Output:\n{execution.output or 'none'}",
-                    f"Error: {execution.error or 'none'}",
+                    f"Execution: {execution.id} | {execution.mode} | {display_status}",
+                    f"Output:\n{output or 'none'}",
+                    f"Error: {error or 'none'}",
                     f"Artifact: {execution.artifact_path}",
                     "",
                 ]
             )
         return lines
+
+    def _display_execution_status(self, execution) -> str:
+        if execution.status == "blocked" and "requires an elevated Administrator session" in (execution.error or ""):
+            return "Admin Required"
+        return execution.status
+
+    def _display_execution_output(self, execution) -> str:
+        output = execution.output or ""
+        if execution.mode == "status" and "Status: OFF" in output:
+            return output.replace("Status: OFF", "Status: Not Hardened Yet")
+        return output
+
+    def _display_execution_error(self, execution) -> str:
+        error = execution.error or ""
+        if execution.status == "blocked" and "requires an elevated Administrator session" in error:
+            return "Run the app from an Administrator terminal to check or apply this control."
+        return error
 
     def _show_run_details(self) -> None:
         selected = self.run_table.selectedItems()
@@ -754,9 +809,11 @@ class BenchmarksPage(BasePage):
         self.current_documents: list[Any] = []
         self.current_items: list[Any] = []
         self.current_readiness: list[Any] = []
+        self.selected_benchmark_ids: list[str] = []
         self.path_edit = QtWidgets.QLineEdit()
         self.documents_table = QtWidgets.QTableWidget()
         self.items_table = QtWidgets.QTableWidget()
+        self.selection_table = QtWidgets.QTableWidget()
         self.readiness_table = QtWidgets.QTableWidget()
         self.details = QtWidgets.QTextEdit()
         self.details.setReadOnly(True)
@@ -770,6 +827,12 @@ class BenchmarksPage(BasePage):
         browse.clicked.connect(self._browse)
         import_button = QtWidgets.QPushButton("Import Benchmark")
         import_button.clicked.connect(self._import)
+        add_button = QtWidgets.QPushButton("Add Selected Controls")
+        add_button.clicked.connect(self._add_selected_items)
+        remove_button = QtWidgets.QPushButton("Remove Highlighted")
+        remove_button.clicked.connect(self._remove_selected_items)
+        clear_button = QtWidgets.QPushButton("Clear Profile Selection")
+        clear_button.clicked.connect(self._clear_selected_items)
         dry_run_button = QtWidgets.QPushButton("Dry Run Selected Script")
         dry_run_button.clicked.connect(self._dry_run_selected_script)
         harden_button = QtWidgets.QPushButton("Harden Selected Script")
@@ -784,6 +847,12 @@ class BenchmarksPage(BasePage):
         row.addWidget(browse)
         row.addWidget(import_button)
 
+        selection_actions = QtWidgets.QHBoxLayout()
+        selection_actions.addWidget(add_button)
+        selection_actions.addWidget(remove_button)
+        selection_actions.addWidget(clear_button)
+        selection_actions.addStretch(1)
+
         script_actions = QtWidgets.QHBoxLayout()
         script_actions.addWidget(self.profile_name, 1)
         script_actions.addWidget(self.strictness_combo)
@@ -794,12 +863,16 @@ class BenchmarksPage(BasePage):
 
         self.documents_table.itemSelectionChanged.connect(self._show_items)
         self.items_table.itemSelectionChanged.connect(self._show_item_details)
+        self.selection_table.itemSelectionChanged.connect(self._show_selected_item_details)
         self.readiness_table.itemSelectionChanged.connect(self._show_script_details)
         self.body.addLayout(row)
         self.body.addWidget(_section("Loaded CIS Benchmark Sets"))
         self.body.addWidget(self.documents_table)
         self.body.addWidget(_section("CIS Controls In Selected Set"))
         self.body.addWidget(self.items_table)
+        self.body.addLayout(selection_actions)
+        self.body.addWidget(_section("Controls In Profile"))
+        self.body.addWidget(self.selection_table)
         self.body.addWidget(_section("Profile Builder And Script Readiness"))
         self.body.addLayout(script_actions)
         self.body.addWidget(self.readiness_table)
@@ -823,6 +896,8 @@ class BenchmarksPage(BasePage):
                 for doc in self.current_documents
             ],
         )
+        if self.documents_table.rowCount() > 0 and self.documents_table.currentRow() < 0:
+            self.documents_table.selectRow(0)
         self._show_items()
 
     def _browse(self) -> None:
@@ -870,6 +945,7 @@ class BenchmarksPage(BasePage):
             ],
         )
         self.items_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.items_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         _fill(
             self.readiness_table,
             ["Benchmark", "Readiness", "Risk", "Script", "Reason"],
@@ -886,10 +962,12 @@ class BenchmarksPage(BasePage):
         )
         _paint_status_column(self.readiness_table, 1)
         _paint_status_column(self.readiness_table, 2)
+        self._refresh_selected_controls_table()
         self.details.setPlainText(
             f"Document: {document.name}\nVersion: {document.version}\nSource: {document.source_path}\n"
             f"Controls loaded: {len(self.current_items)}\nScripts: {self._script_readiness_summary()}\n"
-            "Select one or more controls, enter a profile name, then click Save Selected As Profile."
+            f"Selected for profile: {len(self.selected_benchmark_ids)}\n"
+            "Add controls into the profile selection, remove them if needed, then click Save Selected As Profile."
         )
 
     def _show_item_details(self) -> None:
@@ -903,6 +981,30 @@ class BenchmarksPage(BasePage):
             f"- Level: {selected[2].text()}\n"
             f"- Script: {selected[3].text()}\n"
             f"- Confidence: {selected[4].text()}"
+        )
+
+    def _show_selected_item_details(self) -> None:
+        row = self.selection_table.currentRow()
+        if row < 0:
+            return
+        benchmark_id_item = self.selection_table.item(row, 0)
+        if benchmark_id_item is None:
+            return
+        benchmark_id = benchmark_id_item.text()
+        item = next((entry for entry in self.current_items if entry.benchmark_id == benchmark_id), None)
+        if item is None:
+            return
+        self.details.setPlainText(
+            "\n".join(
+                [
+                    f"Selected benchmark: {item.benchmark_id}",
+                    f"Title: {item.title}",
+                    f"Level: {item.profile_level}",
+                    f"Script state: {item.script_state}",
+                    f"Confidence: {item.confidence:.2f}",
+                    f"Currently in profile: yes ({len(self.selected_benchmark_ids)} total)",
+                ]
+            )
         )
 
     def _show_script_details(self) -> None:
@@ -1024,6 +1126,65 @@ class BenchmarksPage(BasePage):
             return self.current_readiness[row]
         return None
 
+    def _selected_item_rows(self) -> list[int]:
+        return sorted({item.row() for item in self.items_table.selectedItems()})
+
+    def _add_selected_items(self) -> None:
+        rows = self._selected_item_rows()
+        if not rows:
+            self.details.setPlainText("Select one or more controls in the benchmark table first.")
+            return
+        added = 0
+        for row in rows:
+            if 0 <= row < len(self.current_items):
+                benchmark_id = self.current_items[row].benchmark_id
+                if benchmark_id not in self.selected_benchmark_ids:
+                    self.selected_benchmark_ids.append(benchmark_id)
+                    added += 1
+        self._refresh_selected_controls_table()
+        self.details.setPlainText(
+            f"Added {added} control(s) to the profile selection. Selected now: {len(self.selected_benchmark_ids)}."
+        )
+
+    def _remove_selected_items(self) -> None:
+        rows = sorted({item.row() for item in self.selection_table.selectedItems()}, reverse=True)
+        if not rows:
+            self.details.setPlainText("Highlight one or more controls in the profile selection table first.")
+            return
+        removed = 0
+        for row in rows:
+            item = self.selection_table.item(row, 0)
+            if item is None:
+                continue
+            benchmark_id = item.text()
+            if benchmark_id in self.selected_benchmark_ids:
+                self.selected_benchmark_ids.remove(benchmark_id)
+                removed += 1
+        self._refresh_selected_controls_table()
+        self.details.setPlainText(
+            f"Removed {removed} control(s) from the profile selection. Selected now: {len(self.selected_benchmark_ids)}."
+        )
+
+    def _clear_selected_items(self) -> None:
+        self.selected_benchmark_ids.clear()
+        self._refresh_selected_controls_table()
+        self.details.setPlainText("Cleared the current profile selection.")
+
+    def _refresh_selected_controls_table(self) -> None:
+        selected_items = [
+            item for item in self.current_items if item.benchmark_id in set(self.selected_benchmark_ids)
+        ]
+        _fill(
+            self.selection_table,
+            ["Benchmark", "Title", "Level", "Script"],
+            [
+                [item.benchmark_id, item.title, item.profile_level, item.script_state]
+                for item in selected_items
+            ],
+        )
+        self.selection_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.selection_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+
     def _select_readiness_by_item_id(self, item_id: str) -> None:
         for row, item in enumerate(self.current_readiness):
             if item.item_id == item_id:
@@ -1039,13 +1200,15 @@ class BenchmarksPage(BasePage):
         return ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
 
     def _save_selected_profile(self) -> None:
-        rows = sorted({item.row() for item in self.items_table.selectedItems()})
-        if not rows:
-            rows = list(range(len(self.current_items)))
-        if not rows:
+        if not self.selected_benchmark_ids:
+            self.details.setPlainText("Add controls into the profile selection before saving the profile.")
+            return
+        if not self.current_items:
             self.details.setPlainText("No CIS controls are loaded for the selected benchmark set.")
             return
-        selected_items = [self.current_items[row] for row in rows if 0 <= row < len(self.current_items)]
+        selected_items = [
+            item for item in self.current_items if item.benchmark_id in set(self.selected_benchmark_ids)
+        ]
         if not selected_items:
             self.details.setPlainText("Selected controls could not be resolved.")
             return

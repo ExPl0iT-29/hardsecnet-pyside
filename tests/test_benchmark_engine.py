@@ -213,9 +213,9 @@ def test_bootstrap_autoloads_exported_bundles_once(tmp_path: Path) -> None:
     windows_items = service.list_benchmark_items(document_id="doc-native-windows")
     ubuntu_items = service.list_benchmark_items(document_id="doc-native-ubuntu")
     assert windows_items[0].script_path.endswith("1.1.1.ps1")
-    assert windows_items[0].script_state == "candidate"
+    assert windows_items[0].script_state == "review_required"
     assert ubuntu_items[0].script_path.endswith("3.2.1.sh")
-    assert ubuntu_items[0].script_state == "candidate"
+    assert ubuntu_items[0].script_state == "review_required"
 
 
 def test_exported_bundle_missing_script_becomes_review_issue(tmp_path: Path) -> None:

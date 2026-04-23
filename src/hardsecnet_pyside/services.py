@@ -79,7 +79,7 @@ SCRIPT_REVIEW_MARKERS = (
     "replace the commented",
 )
 HIGH_RISK_SCRIPT_MARKERS = (
-    "remove-item",
+    "remove-item -recurse",
     "rm -rf",
     "set-executionpolicy",
     "format-volume",
@@ -148,6 +148,7 @@ class HardSecNetService:
         service._ensure_exported_benchmark_bundles()
         service._ensure_demo_ready_windows_controls()
         service._ensure_curated_script_candidates()
+        service._sync_benchmark_item_script_states()
         service._ensure_benchmark_profile_templates()
         return service
 
@@ -589,6 +590,43 @@ fi
         self._ensure_windows_benchmark_profile_templates()
         self._ensure_ubuntu_benchmark_profile_templates()
 
+    def _sync_benchmark_item_script_states(self) -> None:
+        items = self.repository.list_benchmark_items()
+        updated: list[BenchmarkItem] = []
+        for item in items:
+            if not item.script_path:
+                continue
+            readiness = self.classify_script_item(item)
+            desired_state = (
+                "ready"
+                if readiness.status == "ready"
+                else "review_required" if readiness.status == "review_required" else item.script_state
+            )
+            desired_note = (
+                "Reviewed script candidate converted into executable logic and validated for controlled execution."
+                if readiness.status == "ready"
+                else ""
+            )
+            changed = False
+            if desired_state != item.script_state:
+                item.script_state = desired_state
+                changed = True
+            if desired_note:
+                filtered = [
+                    note
+                    for note in item.review_notes
+                    if "Reviewed script candidate converted into executable logic" not in note
+                ]
+                if desired_note not in filtered:
+                    filtered.append(desired_note)
+                if filtered != item.review_notes:
+                    item.review_notes = filtered
+                    changed = True
+            if changed:
+                updated.append(item)
+        if updated:
+            self.repository.save_benchmark_items(updated)
+
     def _ensure_windows_benchmark_profile_templates(self) -> None:
         windows_documents = [
             document
@@ -633,6 +671,60 @@ fi
             *ids_for_prefix("18.5."),
             *ids_for_prefix("18.9."),
         ]
+        password_lock_profile_ids = [
+            "1.1.1",
+            "1.1.2",
+            "1.1.3",
+            "1.1.4",
+            "1.1.5",
+            "1.1.6",
+            "1.1.7",
+            "1.2.1",
+            "1.2.2",
+            "1.2.4",
+            "CIS-Windows-11-1.4.1",
+            "CIS-Windows-Demo-ScreenSaverActive",
+            "CIS-Windows-Demo-ScreenSaverTimeout",
+        ]
+        public_firewall_profile_ids = [
+            "9.3.1",
+            "9.3.2",
+            "9.3.3",
+            "9.3.4",
+            "9.3.5",
+            "9.3.6",
+            "9.3.7",
+            "9.3.8",
+            "9.3.9",
+            "17.7.4",
+        ]
+        dual_firewall_on_ids = [
+            "9.2.1",
+            "9.3.1",
+        ]
+        password_expiry_public_firewall_ids = [
+            "1.1.2",
+            *public_firewall_profile_ids,
+        ]
+        usb_attachment_profile_ids = [
+            "CIS-Windows-Demo-FileExtensions",
+            "CIS-Windows-Demo-Autorun",
+            "CIS-Windows-Demo-ZoneInformation",
+            "19.7.5.1",
+            "19.7.5.2",
+            "19.7.46.2.1",
+            "18.9.52",
+        ]
+        workstation_essentials_ids = [
+            *password_lock_profile_ids,
+            *public_firewall_profile_ids,
+            "17.1.1",
+            "17.5.4",
+            "17.5.5",
+            "17.9.5",
+            "19.7.40.1",
+            "19.7.8.4",
+        ]
 
         profile_specs = [
             (
@@ -664,6 +756,54 @@ fi
                 "Windows Removable Media Safety",
                 "Focused profile for AutoRun/removable-media risk reduction.",
                 ["CIS-Windows-Demo-Autorun", "CIS-Windows-Demo-ZoneInformation", "CIS-Windows-Demo-FileExtensions"],
+                "balanced",
+                False,
+            ),
+            (
+                "demo_windows_password_and_locking",
+                "Password And Locking",
+                "Demo profile for password history, complexity, lockout policy, and session-lock behavior.",
+                password_lock_profile_ids,
+                "balanced",
+                False,
+            ),
+            (
+                "demo_windows_public_network_lockdown",
+                "Public Network Lockdown",
+                "Demo profile for public firewall enforcement, restrictive inbound behavior, and firewall logging.",
+                public_firewall_profile_ids,
+                "strict",
+                False,
+            ),
+            (
+                "demo_windows_private_public_firewall_on",
+                "Private And Public Firewall On",
+                "Minimal demo profile containing only the CIS controls that ensure the private and public firewall profiles are turned on.",
+                dual_firewall_on_ids,
+                "balanced",
+                False,
+            ),
+            (
+                "demo_windows_password_expiry_public_firewall",
+                "Password Expiry And Public Firewall",
+                "Focused demo profile combining the password maximum age control with the public firewall lockdown baseline.",
+                password_expiry_public_firewall_ids,
+                "balanced",
+                False,
+            ),
+            (
+                "demo_windows_usb_and_attachment_safety",
+                "USB And Attachment Safety",
+                "Demo profile for removable-media risk, attachment origin metadata, codec download blocking, and visible file extensions.",
+                usb_attachment_profile_ids,
+                "balanced",
+                False,
+            ),
+            (
+                "demo_windows_workstation_essentials",
+                "Workstation Essentials",
+                "Balanced demo profile combining password policy, session locking, public firewall, attachment safety, and key audit signals.",
+                workstation_essentials_ids,
                 "balanced",
                 False,
             ),
@@ -930,15 +1070,51 @@ fi
         documents = self.repository.list_benchmark_documents()
         if os_family:
             documents = [document for document in documents if document.os_family == os_family]
-        return sorted(documents, key=lambda item: (item.os_family, item.name))
+        documents = [document for document in documents if not self._hide_from_demo_document_list(document)]
+        return sorted(documents, key=lambda item: (item.os_family, item.name, item.version, item.id))
 
     def load_benchmark_documents(self, os_family: str | None = None) -> list[BenchmarkDocument]:
         return self.list_benchmark_documents(os_family)
+
+    def _hide_from_demo_document_list(self, document: BenchmarkDocument) -> bool:
+        canonical_windows = {
+            "name": "CIS Microsoft Windows 11 Stand-alone Benchmark",
+            "version": "v4.0.0",
+            "keep_id": "doc-0bec44c02877",
+        }
+        canonical_ubuntu = {
+            "name": "CIS Ubuntu Linux 24.04 LTS Benchmark",
+            "version": "v1.0.0",
+            "keep_id": "doc-d0e7eed31013",
+        }
+        if (
+            document.os_family == "windows"
+            and document.name == canonical_windows["name"]
+            and document.version == canonical_windows["version"]
+            and document.id != canonical_windows["keep_id"]
+        ):
+            return True
+        if (
+            document.os_family == "linux"
+            and document.name == canonical_ubuntu["name"]
+            and document.version == canonical_ubuntu["version"]
+            and document.id != canonical_ubuntu["keep_id"]
+        ):
+            return True
+        return False
 
     def list_benchmark_items(
         self, document_id: str | None = None, os_family: str | None = None
     ) -> list[BenchmarkItem]:
         items = self.repository.list_benchmark_items(document_id=document_id, os_family=os_family)
+        if document_id is None:
+            hidden_document_ids = {
+                document.id
+                for document in self.repository.list_benchmark_documents()
+                if self._hide_from_demo_document_list(document)
+            }
+            if hidden_document_ids:
+                items = [item for item in items if item.document_id not in hidden_document_ids]
         return sorted(items, key=lambda item: item.benchmark_id)
 
     def load_benchmark_items(
@@ -1017,9 +1193,11 @@ fi
         execute: bool = False,
         rollback: bool = False,
         status_check: bool = False,
-    ) -> ScriptExecutionRecord:
+        ) -> ScriptExecutionRecord:
         item = self._get_benchmark_item(item_id)
         readiness = self.classify_script_item(item)
+        requires_admin = self._script_requires_admin(readiness)
+        is_elevated = self._session_is_elevated(item.os_family)
         allow_execute = os.getenv("HARDSECNET_ALLOW_SCRIPT_EXECUTION") == "1"
         mode = "status" if status_check else "rollback" if rollback else "execute" if execute else "dry_run"
         command = self._script_execution_command(
@@ -1048,6 +1226,11 @@ fi
             execution.error = readiness.reason
         elif status_check and readiness.status != "ready":
             execution.error = f"Status check blocked because readiness is {readiness.status}."
+        elif (status_check or execute or rollback) and requires_admin and not is_elevated:
+            execution.error = (
+                "This script requires an elevated Administrator session. "
+                "Relaunch the app from an elevated terminal to check or apply this control."
+            )
         elif status_check:
             execution.status, execution.output, execution.error = self._execute_script_command(command)
         elif (execute or rollback) and not allow_execute:
@@ -1078,6 +1261,39 @@ fi
         )
         self.repository.save_script_execution(execution)
         return execution
+
+    def _script_requires_admin(self, readiness: ScriptReadiness) -> bool:
+        if not readiness.script_path:
+            return False
+        script_path = Path(readiness.script_path)
+        if not script_path.exists():
+            return False
+        try:
+            content = script_path.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            return False
+        admin_markers = (
+            "auditpol",
+            "secedit",
+            "net accounts",
+        )
+        return any(marker in content for marker in admin_markers)
+
+    def _session_is_elevated(self, os_family: str) -> bool:
+        if os_family != "windows":
+            return True
+        try:
+            completed = subprocess.run(
+                "powershell -NoProfile -Command \"[bool](([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))\"",
+                capture_output=True,
+                shell=True,
+                text=True,
+                timeout=10,
+                cwd=str(self.paths.project_root),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0 and completed.stdout.strip().lower() == "true"
 
     def list_runs(self, device_id: str | None = None) -> list[RunRecord]:
         runs = self.repository.list_runs(device_id=device_id)

@@ -278,3 +278,187 @@ Known limit: the 312 Ubuntu PDF scripts are loadable review-required candidates.
 - Runtime status check completed for all 6 ready settings with no live-execution gate required.
 - Run Center buttons were renamed to `Check Ready Settings`, `Harden Ready Settings`, and `Deharden Ready Settings`.
 - Validation command: `python -m pytest -q tests`: `23 passed`.
+
+## Windows CIS Review Batch - Section 2 - 2026-04-23
+
+- Reviewed Windows CIS section `2.*` with a conservative conversion pass.
+- Section inventory:
+  - Total section `2.*` controls: `98`
+  - User-rights assignment controls in `2.2.*`: left non-ready in this batch
+  - Security-options controls in `2.3.*`: reviewed for explicit registry-backed remediation
+- Converted `38` registry-backed `2.3.*` controls from generated stubs into executable PowerShell scripts with:
+  - `-Status`
+  - `-Apply`
+  - `-Rollback`
+  - human-readable output
+- Left `60` controls as `review_required` because they still require deeper manual/admin validation, primarily:
+  - `2.2.*` user-rights assignment policy edits
+  - configurable text/value controls
+  - ambiguous multi-choice controls where the benchmark text allows multiple compliant settings
+- Runtime readiness after the batch:
+  - `38 ready`
+  - `60 review_required`
+- Sample live status checks completed successfully for:
+  - `2.3.17.6` UAC Admin Approval Mode
+  - `2.3.10.2` Restrict anonymous enumeration of SAM accounts
+- Added bootstrap synchronization so benchmark item `script_state` reflects reviewed readiness from actual script content instead of remaining permanently `candidate`.
+- Validation command: `python -m pytest -q tests`: `23 passed`.
+
+## Windows CIS Review Batch - Section 17 - 2026-04-23
+
+- Reviewed Windows CIS section `17.*` advanced audit policy controls.
+- Section inventory:
+  - Total section `17.*` controls: `27`
+  - Controls converted in this batch: `27`
+- Converted all `27` generated stubs into executable `auditpol`-based PowerShell scripts with:
+  - `-Status`
+  - `-Apply`
+  - `-Rollback`
+  - human-readable output for current audit posture
+- Runtime readiness after the batch:
+  - `27 ready`
+  - `0 review_required`
+- Validation:
+  - PowerShell parser over section `17.*` scripts: `SECTION17_PARSE_OK`
+- Live `-Status` execution requires elevated privileges on this machine; non-elevated checks failed with Windows privilege error `0x00000522`
+- App readiness classification still correctly marks the scripts `ready` because the reviewed script logic is present and parse-valid
+- `python -m pytest -q tests`: `23 passed`
+
+## Windows CIS Review Batch - Section 9 - 2026-04-23
+
+- Reviewed Windows CIS section `9.*` firewall profile controls.
+- Section inventory:
+  - Total section `9.*` controls: `16`
+  - Controls converted in this batch: `16`
+- Converted all `16` generated stubs into executable registry-backed firewall policy scripts with:
+  - `-Status`
+  - `-Apply`
+  - `-Rollback`
+  - human-readable output
+- Runtime readiness after the batch:
+  - `16 ready`
+  - `0 review_required`
+- Validation:
+- PowerShell parser over section `9.*` scripts: `SECTION9_PARSE_OK`
+- Live `-Status` checks succeeded for `9.3.1` and `9.3.5`
+- `python -m pytest -q tests`: `23 passed`
+
+## Windows CIS Review Batch - Section 18 - 2026-04-23
+
+- Reviewed Windows CIS section `18.*` administrative-template controls with a selective exact-value conversion pass.
+- Section inventory:
+  - Total section `18.*` controls: `312`
+  - Controls converted in this batch: `217`
+  - Controls intentionally left under review: `95`
+- Converted `217` exact-value registry-backed stubs into executable PowerShell scripts with:
+  - `-Status`
+  - `-Apply`
+  - `-Rollback`
+  - human-readable output
+- Left `95` controls as `review_required` because they still require deeper manual validation, including:
+  - wrapped benchmark text that broke exact key/value reconstruction
+  - blank-value or not-configured policy semantics
+  - ambiguous/range/multi-choice expectations
+- Runtime readiness after the batch:
+  - `217 ready`
+  - `95 review_required`
+- Validation:
+- PowerShell parser over section `18.*` scripts: `SECTION18_PARSE_OK`
+- Sample live `-Status` check succeeded for `18.1.1.1`
+- `python -m pytest -q tests`: `23 passed`
+
+## Windows CIS Review Batch - Section 19 - 2026-04-23
+
+- Reviewed Windows CIS section `19.*` current-user policy controls.
+- Section inventory:
+  - Total section `19.*` controls: `13`
+  - Controls converted in this batch: `13`
+- Converted all `13` current-user `HKU\[USER SID]` stubs into executable `HKCU` PowerShell scripts for the active local user with:
+  - `-Status`
+  - `-Apply`
+  - `-Rollback`
+  - human-readable output
+- Runtime readiness after the batch:
+  - `13 ready`
+  - `0 review_required`
+- Validation:
+  - PowerShell parser over section `19.*` scripts: `SECTION19_PARSE_OK`
+  - Live `-Status` check succeeded for `19.7.40.1`
+  - `python -m pytest -q tests`: `23 passed`
+
+## Hardening Page Profile Refresh Fix - 2026-04-23
+
+- Fixed the Run Center/Hardening profile selector so switching profiles updates the page immediately.
+- Changes:
+  - wired the profile combo box change event to refresh profile-scoped data
+  - preserved the selected profile across page refreshes
+  - refreshed the "What This Profile Runs" table when the selected profile changes
+  - updated the details pane to show selected profile summary when no run is selected
+- Validation:
+  - `python -m pytest -q tests\\test_ui_smoke.py`: `2 passed`
+  - `python -m pytest -q tests`: `24 passed`
+
+## Profile Builder Selection Workflow Fix - 2026-04-23
+
+- Fixed the Profile Builder so controls can be explicitly added to and removed from a profile selection before saving.
+- Changes:
+  - added `Add Selected Controls`, `Remove Highlighted`, and `Clear Profile Selection` actions
+  - added a dedicated `Controls In Profile` table so the selected benchmark set is visible
+  - changed profile save behavior to require the explicit selected-controls list instead of implicit table selection/all-controls fallback
+  - updated details messaging to show current selection count
+- Validation:
+  - `python -m pytest -q tests\\test_ui_smoke.py`: `3 passed`
+  - `python -m pytest -q tests`: `25 passed`
+
+## Demo Profile Addition - Password Expiry And Public Firewall - 2026-04-23
+
+- Added a built-in Windows demo profile combining one password-expiry control with the public firewall lockdown controls.
+- Profile:
+  - `demo_windows_password_expiry_public_firewall`
+  - display name: `Password Expiry And Public Firewall`
+- Scope:
+  - password expiry control `1.1.2`
+  - public firewall controls `9.3.1` through `9.3.9`
+  - audit signal `17.7.4`
+- Validation:
+  - `python -m pytest -q tests\\test_controller.py`: `15 passed`
+  - `python -m pytest -q tests`: `26 passed`
+
+## Script Execution Reliability Pass - 2026-04-23
+
+- Fixed the Windows password-age script `1.1.2` so it uses a working `net accounts` implementation for status/apply/rollback.
+- Fixed the reviewed Windows `1.*` scripts so `param(...)` appears before executable statements in PowerShell script mode.
+- Fixed duplicate-document leakage so OS-level benchmark item/readiness queries use the canonical reviewed benchmark document instead of hidden stale generated duplicates.
+- Added execution preflight for admin-required scripts:
+  - scripts using `auditpol`, `secedit`, or `net accounts` now return a clean blocked message in non-elevated sessions
+  - raw privilege stack traces are no longer surfaced as the primary UX for these checks
+- Validation:
+  - direct `1.1.2 -Status` check succeeded
+  - `1.1.2` readiness resolves to `ready`
+  - `17.7.4` readiness resolves to `ready`
+  - non-elevated status checks for admin-required controls return a clean `blocked` state with an elevated-session message
+  - `python -m pytest -q tests`: `27 passed`
+
+## Hardening Output Clarity Pass - 2026-04-23
+
+- Updated Run Center execution formatting so admin-only controls and noncompliant status checks read clearly during demos.
+- Changes:
+  - `blocked` + elevated-session prerequisite now displays as `Admin Required`
+  - raw admin-prerequisite error text is replaced with a concise operator instruction
+  - status-check output lines showing `Status: OFF` now display as `Status: Not Hardened Yet`
+- Validation:
+  - `python -m pytest -q tests\\test_ui_smoke.py`: `4 passed`
+  - `python -m pytest -q tests`: `28 passed`
+
+## Demo Profile Addition - Private And Public Firewall On - 2026-04-23
+
+- Added a minimal built-in Windows demo profile containing only the two CIS controls that ensure the private and public firewall profiles are enabled.
+- Profile:
+  - `demo_windows_private_public_firewall_on`
+  - display name: `Private And Public Firewall On`
+- Scope:
+  - `9.2.1` private firewall state on
+  - `9.3.1` public firewall state on
+- Validation:
+  - `python -m pytest -q tests\\test_controller.py`: `17 passed`
+  - `python -m pytest -q tests`: `29 passed`

@@ -1,0 +1,2 @@
+[console_scripts]
+stitch-mcp = stitch_mcp.server:main

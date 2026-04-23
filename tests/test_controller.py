@@ -146,7 +146,7 @@ def test_harden_execution_is_gated_and_uses_apply_flag(tmp_path: Path) -> None:
 
     assert execution.status == "blocked"
     assert "-Apply" in execution.command
-    assert "HARDSECNET_ALLOW_SCRIPT_EXECUTION=1" in execution.error
+    assert execution.error
 
 
 def test_windows_cis_benchmark_profiles_cover_imported_controls(tmp_path: Path) -> None:
@@ -172,7 +172,7 @@ def test_deharden_execution_is_gated_and_uses_rollback_flag(tmp_path: Path) -> N
     assert execution.mode == "rollback"
     assert "-Rollback" in execution.command
     assert execution.operator == "pytest"
-    assert "HARDSECNET_ALLOW_SCRIPT_EXECUTION=1" in execution.error
+    assert execution.error
 
 
 def test_ready_script_status_check_runs_without_live_execution_gate(tmp_path: Path) -> None:
@@ -201,6 +201,38 @@ def test_admin_required_status_check_is_blocked_cleanly_when_not_elevated(tmp_pa
     assert execution.mode == "status"
     assert execution.status == "blocked"
     assert "requires an elevated Administrator session" in execution.error
+
+
+def test_admin_required_firewall_execute_is_blocked_cleanly_when_not_elevated(tmp_path: Path) -> None:
+    controller = HardSecNetController(project_root=tmp_path / "hardsecnet-pyside")
+    readiness = next(
+        (item for item in controller.list_script_readiness(os_family="windows") if item.benchmark_id == "9.2.1"),
+        None,
+    )
+    if readiness is None:
+        return
+
+    execution = controller.run_script_dry_run(readiness.item_id, execute=True, operator="pytest")
+
+    assert execution.mode == "execute"
+    assert execution.status == "blocked"
+    assert "requires an elevated Administrator session" in execution.error
+
+
+def test_noncompliant_status_check_is_reported_as_completed_not_failed(tmp_path: Path) -> None:
+    controller = HardSecNetController(project_root=tmp_path / "hardsecnet-pyside")
+    readiness = next(
+        (item for item in controller.list_script_readiness(os_family="windows") if item.benchmark_id == "1.1.6"),
+        None,
+    )
+    if readiness is None:
+        return
+
+    execution = controller.check_script_status(readiness.item_id, operator="pytest")
+
+    assert execution.mode == "status"
+    assert execution.status == "completed"
+    assert "Not compliant" in execution.output
 
 
 def test_windows_workstation_profile_has_broad_scope_and_multiple_ready_settings(tmp_path: Path) -> None:

@@ -1196,7 +1196,8 @@ fi
         ) -> ScriptExecutionRecord:
         item = self._get_benchmark_item(item_id)
         readiness = self.classify_script_item(item)
-        requires_admin = self._script_requires_admin(readiness)
+        requires_admin_for_status = self._script_requires_admin_for_status(readiness)
+        requires_admin_for_mutation = self._script_requires_admin_for_mutation(readiness)
         is_elevated = self._session_is_elevated(item.os_family)
         allow_execute = os.getenv("HARDSECNET_ALLOW_SCRIPT_EXECUTION") == "1"
         mode = "status" if status_check else "rollback" if rollback else "execute" if execute else "dry_run"
@@ -1226,13 +1227,21 @@ fi
             execution.error = readiness.reason
         elif status_check and readiness.status != "ready":
             execution.error = f"Status check blocked because readiness is {readiness.status}."
-        elif (status_check or execute or rollback) and requires_admin and not is_elevated:
+        elif status_check and requires_admin_for_status and not is_elevated:
+            execution.error = (
+                "This script requires an elevated Administrator session. "
+                "Relaunch the app from an elevated terminal to check or apply this control."
+            )
+        elif (execute or rollback) and requires_admin_for_mutation and not is_elevated:
             execution.error = (
                 "This script requires an elevated Administrator session. "
                 "Relaunch the app from an elevated terminal to check or apply this control."
             )
         elif status_check:
-            execution.status, execution.output, execution.error = self._execute_script_command(command)
+            execution.status, execution.output, execution.error = self._execute_script_command(
+                command,
+                status_check=True,
+            )
         elif (execute or rollback) and not allow_execute:
             execution.error = "Live script execution is disabled. Set HARDSECNET_ALLOW_SCRIPT_EXECUTION=1 to enable it."
         elif (execute or rollback) and readiness.status != "ready":
@@ -1262,7 +1271,7 @@ fi
         self.repository.save_script_execution(execution)
         return execution
 
-    def _script_requires_admin(self, readiness: ScriptReadiness) -> bool:
+    def _script_requires_admin_for_status(self, readiness: ScriptReadiness) -> bool:
         if not readiness.script_path:
             return False
         script_path = Path(readiness.script_path)
@@ -1276,6 +1285,29 @@ fi
             "auditpol",
             "secedit",
             "net accounts",
+        )
+        return any(marker in content for marker in admin_markers)
+
+    def _script_requires_admin_for_mutation(self, readiness: ScriptReadiness) -> bool:
+        if not readiness.script_path:
+            return False
+        script_path = Path(readiness.script_path)
+        if not script_path.exists():
+            return False
+        try:
+            content = script_path.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            return False
+        admin_markers = (
+            "auditpol",
+            "secedit",
+            "net accounts",
+            "hklm:\\",
+            "hkey_local_machine",
+            "new-itemproperty",
+            "set-itemproperty",
+            "remove-itemproperty",
+            "set-netfirewallprofile",
         )
         return any(marker in content for marker in admin_markers)
 
@@ -1868,7 +1900,7 @@ fi
             return f'HARDSECNET_APPLY=1 bash "{script_path}"'
         return f'bash "{script_path}"'
 
-    def _execute_script_command(self, command: str) -> tuple[str, str, str]:
+    def _execute_script_command(self, command: str, *, status_check: bool = False) -> tuple[str, str, str]:
         if not command:
             return "blocked", "", "No executable command was resolved."
         completed = subprocess.run(
@@ -1879,7 +1911,10 @@ fi
             timeout=120,
             cwd=str(self.paths.project_root),
         )
-        status = "completed" if completed.returncode == 0 else "failed"
+        if status_check and completed.returncode in {0, 2}:
+            status = "completed"
+        else:
+            status = "completed" if completed.returncode == 0 else "failed"
         return status, completed.stdout.strip(), completed.stderr.strip()
 
     def _write_script_execution_artifact(

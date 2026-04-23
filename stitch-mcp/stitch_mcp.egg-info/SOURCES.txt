@@ -1,0 +1,9 @@
+pyproject.toml
+stitch_mcp/__init__.py
+stitch_mcp/server.py
+stitch_mcp.egg-info/PKG-INFO
+stitch_mcp.egg-info/SOURCES.txt
+stitch_mcp.egg-info/dependency_links.txt
+stitch_mcp.egg-info/entry_points.txt
+stitch_mcp.egg-info/requires.txt
+stitch_mcp.egg-info/top_level.txt

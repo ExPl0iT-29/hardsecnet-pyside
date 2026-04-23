@@ -1,18 +1,18 @@
 # CIS Benchmark: CIS Microsoft Windows 11 Stand-alone Benchmark
-# Control: 9.2.7 - Ensure 'Windows Firewall: Private: Logging: Size limit (KB)' is set to '16,384 KB or greater'
+# Control: 9.2.8 - Ensure 'Windows Firewall: Private: Logging: Log dropped packets' is set to 'Yes'
 # Status: reviewed_ready
 # Review Notes: Firewall remediation implemented against the live Defender Firewall profile using Get-NetFirewallProfile and Set-NetFirewallProfile.
 
 param([switch]$Apply, [switch]$Rollback, [switch]$Status)
 $ErrorActionPreference = "Stop"
 
-$ControlId = "9.2.7"
+$ControlId = "9.2.8"
 $Profile = "Private"
-$Property = "LogMaxSizeKilobytes"
-$SettingTitle = "9.2.7 - Ensure 'Windows Firewall: Private: Logging: Size limit (KB)' is set to '16,384 KB or greater'"
-$ExpectedDescription = "LogMaxSizeKilobytes >= 16384"
-$DesiredValue = 16384
-$RollbackValue = 4096
+$Property = "LogBlocked"
+$SettingTitle = "9.2.8 - Ensure 'Windows Firewall: Private: Logging: Log dropped packets' is set to 'Yes'"
+$ExpectedDescription = "LogBlocked = True"
+$DesiredValue = $true
+$RollbackValue = $false
 $BackupRoot = Join-Path $env:ProgramData 'HardSecNet\firewall_backups'
 $BackupPath = Join-Path $BackupRoot "$ControlId.json"
 

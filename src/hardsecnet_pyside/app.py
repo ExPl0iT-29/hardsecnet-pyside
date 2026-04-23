@@ -244,6 +244,7 @@ class HardSecNetController:
         return self.service.list_ai_tasks(subject_id)
 
     def get_dashboard_snapshot(self):
+        """Return the canonical DashboardSnapshot dataclass (attribute access: .runs, .device, ...)."""
         return self.service.get_dashboard_snapshot()
 
     def ai_recommendations(self, run_id: str | None = None) -> list[AgentRecommendation]:
@@ -269,6 +270,11 @@ class HardSecNetController:
         return self.service.get_network_checks(run_id)
 
     def dashboard_snapshot(self) -> dict[str, Any]:
+        """Return an enriched dict snapshot (dict access: snapshot["runs"], ...) used by DashboardPage.
+
+        Prefer get_dashboard_snapshot() for new callers; this variant also joins findings,
+        comparisons, recommendations, and network checks for a single-view dashboard.
+        """
         snapshot = self.service.get_dashboard_snapshot()
         return {
             "device": snapshot.device,

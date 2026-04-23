@@ -1208,6 +1208,13 @@ fi
             rollback=rollback,
             status_check=status_check,
         )
+        argv, env_overrides = self._script_execution_argv(
+            item,
+            readiness,
+            execute=execute,
+            rollback=rollback,
+            status_check=status_check,
+        )
         execution_id = f"script-{uuid.uuid4().hex[:12]}"
         execution = ScriptExecutionRecord(
             id=execution_id,
@@ -1239,15 +1246,18 @@ fi
             )
         elif status_check:
             execution.status, execution.output, execution.error = self._execute_script_command(
-                command,
+                argv,
                 status_check=True,
+                env_overrides=env_overrides,
             )
         elif (execute or rollback) and not allow_execute:
             execution.error = "Live script execution is disabled. Set HARDSECNET_ALLOW_SCRIPT_EXECUTION=1 to enable it."
         elif (execute or rollback) and readiness.status != "ready":
             execution.error = f"Script execution blocked because readiness is {readiness.status}."
         elif execute or rollback:
-            execution.status, execution.output, execution.error = self._execute_script_command(command)
+            execution.status, execution.output, execution.error = self._execute_script_command(
+                argv, env_overrides=env_overrides
+            )
         else:
             execution.status = "dry_run_recorded"
             execution.output = (
@@ -1900,16 +1910,56 @@ fi
             return f'HARDSECNET_APPLY=1 bash "{script_path}"'
         return f'bash "{script_path}"'
 
-    def _execute_script_command(self, command: str, *, status_check: bool = False) -> tuple[str, str, str]:
-        if not command:
+    def _script_execution_argv(
+        self,
+        item: BenchmarkItem,
+        readiness: ScriptReadiness,
+        *,
+        execute: bool = False,
+        rollback: bool = False,
+        status_check: bool = False,
+    ) -> tuple[list[str], dict[str, str]]:
+        # Returns (argv, env_overrides). Build argv directly so the launcher never
+        # invokes a shell with an interpolated path — closes the shell-injection surface.
+        if not readiness.script_path:
+            return [], {}
+        script_path = str(Path(readiness.script_path))
+        if item.os_family == "windows" or Path(readiness.script_path).suffix.lower() == ".ps1":
+            argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path]
+            if status_check:
+                argv.append("-Status")
+            elif rollback:
+                argv.append("-Rollback")
+            elif execute:
+                argv.append("-Apply")
+            return argv, {}
+        env: dict[str, str] = {}
+        if rollback and not status_check:
+            env["HARDSECNET_ROLLBACK"] = "1"
+        elif execute and not status_check:
+            env["HARDSECNET_APPLY"] = "1"
+        return ["bash", script_path], env
+
+    def _execute_script_command(
+        self,
+        argv: list[str],
+        *,
+        status_check: bool = False,
+        env_overrides: dict[str, str] | None = None,
+    ) -> tuple[str, str, str]:
+        if not argv:
             return "blocked", "", "No executable command was resolved."
+        env = None
+        if env_overrides:
+            env = {**os.environ, **env_overrides}
         completed = subprocess.run(
-            command,
+            argv,
             capture_output=True,
-            shell=True,
+            shell=False,
             text=True,
             timeout=120,
             cwd=str(self.paths.project_root),
+            env=env,
         )
         if status_check and completed.returncode in {0, 2}:
             status = "completed"

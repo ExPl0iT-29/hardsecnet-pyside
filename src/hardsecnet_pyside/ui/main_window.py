@@ -9,7 +9,6 @@ from hardsecnet_pyside.ui.pages import (
     BenchmarksPage,
     DashboardPage,
     HardeningPage,
-    NetworkPage,
     ReportsPage,
     SettingsPage,
 )

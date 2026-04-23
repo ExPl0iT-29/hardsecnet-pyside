@@ -17,3 +17,10 @@ tmp-smoke/
 *.egg-info/
 stitch-mcp/
 DESIGN.md
+.claude/
+.claude-logs/
+.claude-cache/
+.claude-embeddings/
+.claude-knowledge/
+.claude-plugins/
+.claude-requests/

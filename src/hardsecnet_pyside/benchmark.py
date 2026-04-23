@@ -483,8 +483,6 @@ class BenchmarkImporter:
         kind = "cis_audit_procedure" if control.automated else "cis_manual_procedure"
         operator = "review_required"
         target = control.benchmark_id
-        if control.os_family if hasattr(control, 'os_family') else False:
-            pass
         return [
             CheckLogic(
                 kind=kind,

@@ -60,6 +60,7 @@ function Restore-BackupValue {
 }
 
 function Set-LiveValue([object]$Value) {
+    if ($Value -is [bool]) { $Value = if ($Value) { 'True' } else { 'False' } }
     switch ($Property) {
         'Enabled' { Set-NetFirewallProfile -Profile $Profile -Enabled $Value -ErrorAction Stop }
         'DefaultInboundAction' { Set-NetFirewallProfile -Profile $Profile -DefaultInboundAction $Value -ErrorAction Stop }

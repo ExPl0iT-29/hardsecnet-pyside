@@ -944,7 +944,11 @@ class BenchmarksPage(BasePage):
         if not source:
             self.details.setPlainText("Provide a benchmark file path before importing.")
             return
-        self.controller.import_benchmark(source)
+        try:
+            self.controller.import_benchmark(source)
+        except Exception as exc:
+            self.details.setPlainText(f"Benchmark import failed:\n{type(exc).__name__}: {exc}")
+            return
         self.on_refresh()
 
     def _show_items(self) -> None:

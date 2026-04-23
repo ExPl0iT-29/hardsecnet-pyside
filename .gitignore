@@ -14,3 +14,6 @@ tmp-smoke/
 *.db
 *.sqlite3
 *.log
+*.egg-info/
+stitch-mcp/
+DESIGN.md
